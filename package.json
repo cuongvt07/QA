@@ -1,0 +1,21 @@
+{
+    "name": "custom-product-qa-engine",
+    "version": "1.0.0",
+    "description": "E2E Automation Testing Engine for Custom Product Websites",
+    "main": "src/cli.js",
+    "scripts": {
+        "test": "node src/cli.js",
+        "start": "node src/cli.js"
+    },
+    "dependencies": {
+        "@google/genai": "^0.12.0",
+        "cors": "^2.8.6",
+        "express": "^5.2.1",
+        "pixelmatch": "^5.3.0",
+        "playwright": "^1.42.0",
+        "pngjs": "^7.0.0",
+        "yargs": "^17.7.2"
+    },
+    "author": "",
+    "license": "ISC"
+}
