@@ -8,6 +8,10 @@ class ErrorListener {
         this.jsErrors = [];
         this.networkErrors = [];
         this.consoleErrors = [];
+
+        // Fatal flags
+        this.fatalApiError = false;
+        this.fatalApiDetails = [];
     }
 
     /**
@@ -34,13 +38,20 @@ class ErrorListener {
         });
 
         page.on('requestfailed', (request) => {
+            const url = request.url();
+            const failureReason = request.failure()?.errorText || 'Unknown';
             this.networkErrors.push({
                 type: 'NETWORK_ERROR',
-                url: request.url(),
+                url: url,
                 method: request.method(),
-                failure: request.failure()?.errorText || 'Unknown',
+                failure: failureReason,
                 timestamp: new Date().toISOString(),
             });
+
+            if (url.includes('customily')) {
+                this.fatalApiError = true;
+                this.fatalApiDetails.push(`Request failed: ${url} (${failureReason})`);
+            }
         });
 
         page.on('response', (response) => {
@@ -56,6 +67,11 @@ class ErrorListener {
                         statusText: response.statusText(),
                         timestamp: new Date().toISOString(),
                     });
+                }
+
+                if (url.includes('customily')) {
+                    this.fatalApiError = true;
+                    this.fatalApiDetails.push(`API Error ${status}: ${url}`);
                 }
             }
         });
@@ -84,6 +100,16 @@ class ErrorListener {
     }
 
     /**
+     * Return fatal status for core APIs (Customily)
+     */
+    getFatalApiStatus() {
+        return {
+            isFatal: this.fatalApiError,
+            reasons: this.fatalApiDetails,
+        };
+    }
+
+    /**
      * Check if any critical errors were captured
      */
     hasCriticalErrors() {
@@ -97,6 +123,8 @@ class ErrorListener {
         this.jsErrors = [];
         this.networkErrors = [];
         this.consoleErrors = [];
+        this.fatalApiError = false;
+        this.fatalApiDetails = [];
     }
 }
 

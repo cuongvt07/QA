@@ -137,15 +137,54 @@ function cropPng(png, width, height) {
  * Verify cart was updated after Add to Cart click
  */
 async function verifyCart(page) {
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(2000);
 
-    // Check URL redirect
+    // 1. Check for "Added!" confirmation text on the button itself
+    try {
+        const addedText = await page.$('.added-to-cart-content');
+        if (addedText && await addedText.isVisible()) {
+            return { success: true, method: 'button_text', message: 'Button shows "Added!" confirmation.' };
+        }
+    } catch (e) { /* continue */ }
+
+    // 2. Check for cart popup/drawer with "It\'s in the cart!" or similar
+    const cartPopupSelectors = [
+        '[class*="cart-popup"]',
+        '[class*="cart-drawer"]',
+        '[class*="cart-notification"]',
+        '[class*="cart-sidebar"]',
+        '[class*="mini-cart"]',
+        '[class*="ajaxcart"]',
+        '[class*="side-cart"]',
+    ];
+
+    for (const selector of cartPopupSelectors) {
+        try {
+            const el = await page.$(selector);
+            if (el && await el.isVisible()) {
+                const text = await el.textContent();
+                if (text.includes('cart') || text.includes('Cart') || text.includes('Added')) {
+                    return { success: true, method: 'cart_popup', message: `Cart popup detected: ${selector}` };
+                }
+            }
+        } catch (e) { /* continue */ }
+    }
+
+    // 3. Check for "View Cart" link/button visible on page
+    try {
+        const viewCartBtn = await page.$('a:has-text("View Cart"), button:has-text("View Cart"), a:has-text("View cart")');
+        if (viewCartBtn && await viewCartBtn.isVisible()) {
+            return { success: true, method: 'view_cart_btn', message: 'View Cart button is visible.' };
+        }
+    } catch (e) { /* continue */ }
+
+    // 4. Check URL redirect to /cart or /checkout
     const url = page.url();
     if (url.includes('/cart') || url.includes('/checkout')) {
         return { success: true, method: 'redirect', message: `Redirected to: ${url}` };
     }
 
-    // Check cart badge count
+    // 5. Check cart badge count
     const cartBadgeSelectors = [
         '.cart-count',
         '.cart-item-count',
@@ -166,11 +205,10 @@ async function verifyCart(page) {
         }
     }
 
-    // Check for success notification
+    // 6. Check for generic success notification
     const successSelectors = [
         '.alert-success',
         '.notification-success',
-        '[class*="success"]',
         '.toast-success',
     ];
 

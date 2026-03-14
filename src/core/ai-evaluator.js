@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_MODEL = 'gemini-2.0-flash-lite';
 
 class AiEvaluator {
     constructor(apiKey) {
@@ -128,6 +128,95 @@ Respond ONLY with valid JSON (no markdown, no backticks):
                 ai_verdict: 'PARSE_ERROR',
                 ai_reason: `Could not parse AI response: ${text.substring(0, 200)}`,
             };
+        }
+    }
+
+    /**
+     * Evaluate the final preview image to detect fatal rendering issues
+     * @param {string} imagePath - Path to the final preview screenshot
+     * @param {object} context - Expected texts dictionary
+     * @returns {object} { ai_verdict: 'PASS' | 'FAIL', ai_reason: string }
+     */
+    async evaluateFinalPreview(imagePath, context = {}) {
+        if (!this.enabled || !this.client) {
+            return { ai_verdict: 'DISABLED', ai_reason: 'AI evaluation disabled' };
+        }
+
+        if (!fs.existsSync(imagePath)) {
+            return { ai_verdict: 'ERROR', ai_reason: 'Final screenshot file not found.' };
+        }
+
+        try {
+            console.log('  [AI] Sending final preview to AI QA Review...');
+            const imageBase64 = fs.readFileSync(imagePath, { encoding: 'base64' });
+
+            const promptText = `
+Bạn là một nhân viên kiểm thử hệ thống in ấn Print-on-Demand.
+Nhiệm vụ của bạn là check tổng quan ảnh Preview này xem có LỖI CHỨC NĂNG NGHIÊM TRỌNG nào không.
+
+CHỈ ĐÁNH RỚT (FAIL) nếu gặp 1 trong các lỗi chí mạng sau:
+1. Chữ bị cắt lẹm hẳn ra ngoài, tràn khung thiết kế.
+2. Hiện mã code thô (ví dụ: [Object object], undefined, null).
+3. Lỗi font chữ nặng (hiển thị toàn ô vuông [], ký tự rác).
+4. WebGL/Canvas bị crash (ảnh trắng bóc, đen xì, hoặc hiện icon rỗng).
+5. Đồ họa (người/vật) bị đè lên nhau che khuất mặt một cách phi lý.
+
+Thông tin Text khách đã nhập (nếu có trong thiết kế, hãy xem nó có hiện lên không): 
+${JSON.stringify(context)}
+
+LƯU Ý: Đây chỉ là hệ thống check luồng thao tác. HÃY BỎ QUA các lỗi nhỏ về thẩm mỹ, răng cưa, tỷ lệ không hoàn hảo hoặc màu sắc lệch tone. Nếu nhìn tổng thể ổn, hãy trả về PASS.
+
+Respond ONLY with valid JSON (no markdown, no backticks):
+{"ai_verdict": "PASS" or "FAIL", "ai_reason": "<one line explanation>"}
+`;
+
+            const ext = imagePath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+
+            const requestPayload = {
+                model: GEMINI_MODEL,
+                contents: [
+                    { text: promptText },
+                    { inlineData: { mimeType: ext, data: imageBase64 } }
+                ],
+                config: {
+                    temperature: 0.1,
+                    responseMimeType: 'application/json',
+                }
+            };
+
+            // Try with retry on 429
+            let response;
+            try {
+                response = await this.client.models.generateContent(requestPayload);
+            } catch (firstError) {
+                if (firstError.message && firstError.message.includes('429')) {
+                    // Parse retry delay from error message
+                    const delayMatch = firstError.message.match(/retry in (\d+)/i);
+                    const waitSec = delayMatch ? parseInt(delayMatch[1], 10) + 5 : 45;
+                    console.log(`      ⏳ Rate limited (429). Waiting ${waitSec}s before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, waitSec * 1000));
+
+                    try {
+                        response = await this.client.models.generateContent(requestPayload);
+                    } catch (retryError) {
+                        console.error('      ❌ AI retry also failed:', retryError.message);
+                        return { ai_verdict: 'ERROR', ai_reason: 'Rate limited after retry.' };
+                    }
+                } else {
+                    throw firstError;
+                }
+            }
+
+            const text = response.text || '';
+            const parsed = this.parseAiResponse(text);
+            return {
+                ai_verdict: parsed.ai_verdict,
+                ai_reason: parsed.ai_reason,
+            };
+
+        } catch (error) {
+            console.error('❌ AI Final Review error:', error.message);
+            return { ai_verdict: 'ERROR', ai_reason: `API call failed: ${error.message}` };
         }
     }
 

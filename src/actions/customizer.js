@@ -37,6 +37,9 @@ const TEXT_INPUT_SELECTORS = [
 ];
 
 const ADD_TO_CART_SELECTORS = [
+    '.customization-add-to-cart',
+    'button.add-to-cart-btn',
+    'button.product-addtocart',
     '#js-btn-add-to-cart',
     'button[id*="add-to-cart"]',
     '.btn-add-to-cart',
@@ -59,6 +62,50 @@ const PREVIEW_IMAGE_SELECTORS = [
 ];
 
 /**
+ * Smart wait for post-interaction loading.
+ * Monitors network for 1 second. If an API call (xhr/fetch) is detected,
+ * waits for the loading element to disappear. Otherwise, proceeds immediately (cached).
+ */
+async function smartWait(page) {
+    let apiDetected = false;
+
+    // 1. Setup network listener
+    const requestListener = (request) => {
+        const type = request.resourceType();
+        if (type === 'xhr' || type === 'fetch') {
+            apiDetected = true;
+        }
+    };
+    page.on('request', requestListener);
+
+    // 2. Wait for 1 second
+    await page.waitForTimeout(1000);
+
+    // 3. Remove listener
+    page.off('request', requestListener);
+
+    // 4. If API detected, wait for loading element to hide
+    if (apiDetected) {
+        console.log('      ⏳ API request detected, waiting for loading to finish...');
+        try {
+            // Wait for common Customily loading indicators to hide (max 10s)
+            await page.waitForSelector('#loadingElement, .customily-loading, .loading-spinner', {
+                state: 'hidden',
+                timeout: 10000 
+            });
+            // Small extra buffer after loading hides for canvas re-render
+            await page.waitForTimeout(500);
+        } catch (e) {
+            console.warn('      ⚠️ Loading timeout (or loader not found), proceeding anyway.');
+        }
+    } else {
+        console.log('      ⚡ No API request (cached), proceeding immediately.');
+        // Small buffer for immediate DOM updates
+        await page.waitForTimeout(200);
+    }
+}
+
+/**
  * Detect if the customizer widget exists on the page
  */
 async function detectCustomizer(page) {
@@ -79,17 +126,19 @@ async function getVisibleOptionGroups(page) {
     const groups = [];
     const elements = await page.$$(OPTION_GROUP_SELECTOR);
 
-    for (const el of elements) {
+    for (let idx = 0; idx < elements.length; idx++) {
+        const el = elements[idx];
         const isVisible = await el.isVisible().catch(() => false);
         if (!isVisible) continue;
 
-        // Get group name
+        // Get group name (stripped of char count suffixes like "(5/10)")
         const nameEl = await el.$('.customization-info-name, .option-title, .customily-label-asb');
         let name = '';
         if (nameEl) {
             name = (await nameEl.textContent()).trim();
-            // Clean up whitespace / newlines
             name = name.replace(/\s+/g, ' ').trim();
+            // Strip trailing char count like "(10)" or "(5/10)" for stable naming
+            name = name.replace(/\s*\(\d+(\/\d+)?\)\s*$/, '').trim();
         }
 
         // Get a unique identifier for this group to avoid duplicates
@@ -117,6 +166,7 @@ async function getVisibleOptionGroups(page) {
             name,
             type,
             groupId,
+            domIndex: idx, // keep for backward compatibility if needed elsewhere
             optionItems,
             textInputs,
             selectDropdowns,
@@ -148,11 +198,42 @@ async function capturePreviewScreenshot(page, filepath) {
  * This ensures dynamic sub-groups are loaded.
  */
 async function scanFirstPersonalizedGroup(page) {
-    const groups = await getVisibleOptionGroups(page);
-    const firstImageGroup = groups.find((g) => g.type === 'image_option');
+    let maxWaitIterations = 10;
+    let interactedIndexes = new Set();
+    let firstImageGroup = null;
+
+    while (maxWaitIterations-- > 0) {
+        const groups = await getVisibleOptionGroups(page);
+        firstImageGroup = groups.find((g) => g.type === 'image_option');
+        
+        if (firstImageGroup) {
+            break; // Found it!
+        }
+
+        // Try to trigger visibility by interacting with first untouched dropdown
+        const nextDropdown = groups.find(g => g.type === 'dropdown' && !interactedIndexes.has(g.domIndex));
+        if (nextDropdown) {
+            interactedIndexes.add(nextDropdown.domIndex);
+            console.log(`    [Scan] Interacting with dropdown "${nextDropdown.name}" to reveal options...`);
+            try {
+                const selectElement = nextDropdown.selectDropdowns[0];
+                const optionsList = await selectElement.$$eval('option:not([disabled])', opts => Math.max(0, opts.length - 1));
+                if (optionsList > 0) {
+                    const rndIdx = Math.floor(Math.random() * optionsList);
+                    await selectElement.selectOption({ index: rndIdx > 0 ? rndIdx : 1 });
+                    await smartWait(page);
+                }
+            } catch (e) {
+                console.warn(`    ⚠️ Scan drop-down failed: ${e.message}`);
+            }
+        } else {
+            // No more unexplored dropdowns, stop
+            break;
+        }
+    }
 
     if (!firstImageGroup) {
-        return { found: false, groupName: null, options: [] };
+        return { found: false, groupName: null, options: [], didMutate: interactedIndexes.size > 0 };
     }
 
     const options = [];
@@ -172,6 +253,7 @@ async function scanFirstPersonalizedGroup(page) {
         found: true,
         groupName: firstImageGroup.name,
         options,
+        didMutate: interactedIndexes.size > 0
     };
 }
 
@@ -191,15 +273,15 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex) {
     const processedGroups = new Set();
 
     // Iterative loop: keep scanning for new groups after each interaction
-    let maxIterations = 30; // Safety limit
+    let maxIterations = 150; // Safety limit
     while (maxIterations-- > 0) {
         // Re-scan groups each iteration
         const groups = await getVisibleOptionGroups(page);
         let foundNewGroup = false;
 
         for (const group of groups) {
-            // Generate a signature to track processed groups
-            const signature = group.name + '|' + group.type + '|' + group.groupId;
+            // Generate a signature tracking domIndex + name to differentiate duplicate name groups (e.g., 'Sphynx' for Cat 1 vs 'Sphynx' for Cat 2)
+            const signature = `${group.domIndex}|${group.name}|${group.type}|${group.groupId}`;
             if (processedGroups.has(signature)) continue;
 
             processedGroups.add(signature);
@@ -207,9 +289,11 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex) {
             stepIndex++;
 
             // Determine if this group type affects the preview image
-            // dropdown (select.customily-input) & text_input (form-control.customily-input) → non-visual
-            // image_option (customization-option-item) → visual
-            const expectsVisualChange = group.type === 'image_option';
+            // text_input → visual change expected (text renders on canvas)
+            // dropdown → non-visual (just selects category)
+            // image_option → visual (changes preview image)
+            const expectsVisualChange = group.type === 'image_option' || group.type === 'text_input';
+            const skipDiffCheck = group.type === 'dropdown';
 
             const stepData = {
                 step_id: stepIndex,
@@ -217,7 +301,8 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex) {
                 name: group.name,
                 group_type: group.type,
                 expects_visual_change: expectsVisualChange,
-                skip_diff_check: !expectsVisualChange,
+                skip_diff_check: skipDiffCheck,
+                requires_ocr: group.type === 'text_input',
                 value_chosen: '',
                 option_thumbnail: '',
                 state_before: '',
@@ -267,7 +352,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex) {
                     await page.keyboard.press('Enter');
                     await input.evaluate((node) => node.blur());
                     
-                    await page.waitForTimeout(800); // Give it time to render text
+                    await page.waitForTimeout(1000); // Give it time to render text
                     
                     stepData.value_chosen = value;
 
@@ -275,16 +360,26 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex) {
                     stepData.action = 'Select Dropdown';
                     const select = group.selectDropdowns[0];
                     const options = await select.$$('option:not([disabled])');
+                    
+                    // Filter out options with empty values (often used as placeholders like "Number of Cats")
+                    const validOptions = [];
+                    for (const opt of options) {
+                        const val = await opt.getAttribute('value');
+                        if (val && val.trim() !== '') validOptions.push({ element: opt, value: val });
+                    }
 
-                    if (options.length > 0) {
-                        const randomIndex = Math.floor(Math.random() * options.length);
-                        const optionValue = await options[randomIndex].getAttribute('value');
-                        const optionText = (await options[randomIndex].textContent()).trim();
+                    if (validOptions.length > 0) {
+                        const randomIndex = Math.floor(Math.random() * validOptions.length);
+                        const selectedOpt = validOptions[randomIndex];
+                        const optionText = (await selectedOpt.element.textContent()).trim();
 
                         await ensureCleanPage(page);
-                        await select.selectOption(optionValue);
+                        await select.selectOption(selectedOpt.value);
                         stepData.value_chosen = optionText;
                     }
+
+                    // Wait for dynamic sub-groups to appear after dropdown change
+                    await smartWait(page);
 
                 } else if (group.type === 'image_option') {
                     stepData.action = 'Select Option';
@@ -364,6 +459,20 @@ async function clickAddToCart(page) {
             const btn = await page.$(selector);
             if (btn && await btn.isVisible()) {
                 await btn.click({ force: true });
+                console.log(`      ✅ Clicked: ${selector}`);
+
+                // Wait for "Added!" text or cart popup to appear (max 8s)
+                try {
+                    await page.waitForSelector('.added-to-cart-content, [class*="cart-popup"], [class*="cart-drawer"], [class*="cart-notification"]', {
+                        state: 'visible',
+                        timeout: 8000
+                    });
+                    console.log('      ✅ Cart confirmation detected.');
+                } catch (e) {
+                    // Fallback: just wait a bit
+                    await page.waitForTimeout(3000);
+                }
+
                 return { success: true, selector };
             }
         } catch (e) {

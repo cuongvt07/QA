@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -26,7 +27,7 @@ app.get('/api/reports', (req, res) => {
             return res.json([]);
         }
 
-        const folders = fs.readdirSync(REPORTS_DIR).filter(f => /^QA\d+$/.test(f));
+        const folders = fs.readdirSync(REPORTS_DIR).filter(f => /^(TC_\d+|QA\d+|[A-Z]{3}\d{3})$/i.test(f));
         const reports = [];
 
         for (const folder of folders) {
@@ -53,7 +54,7 @@ app.get('/api/reports', (req, res) => {
 
 // API: Trigger engine run
 app.post('/api/run', (req, res) => {
-    const { url, optionIndex, useAi } = req.body;
+    const { url, tcCode, optionIndex, useAi } = req.body;
     
     if (!url) {
         return res.status(400).json({ error: 'Missing product URL' });
@@ -67,6 +68,10 @@ app.post('/api/run', (req, res) => {
         cliArgs.push(`--option-index=${optionIndex}`);
     } else {
         // Just run default flat
+    }
+    
+    if (tcCode) {
+        cliArgs.push(`--tc-code=${tcCode}`);
     }
     
     if (req.body.headless === false) {
@@ -130,16 +135,16 @@ app.get('/api/run-status/:runId', (req, res) => {
     });
 });
 
-// API: Delete a report folder (QAx) and all its files
-app.delete('/api/reports/:qaCode', (req, res) => {
-    const qaCode = req.params.qaCode;
+// API: Delete a report folder (TC_x or QAx) and all its files
+app.delete('/api/reports/:code', (req, res) => {
+    const code = req.params.code;
 
-    // Validate qaCode format to prevent path traversal
-    if (!/^QA\d+$/i.test(qaCode)) {
-        return res.status(400).json({ error: 'Invalid QA code format' });
+    // Validate format to prevent path traversal
+    if (!/^(TC_\d+|QA\d+)$/i.test(code)) {
+        return res.status(400).json({ error: 'Invalid report code format' });
     }
 
-    const reportDir = path.join(REPORTS_DIR, qaCode);
+    const reportDir = path.join(REPORTS_DIR, code);
     if (!fs.existsSync(reportDir)) {
         return res.status(404).json({ error: 'Report not found' });
     }
@@ -147,10 +152,40 @@ app.delete('/api/reports/:qaCode', (req, res) => {
     try {
         fs.rmSync(reportDir, { recursive: true, force: true });
         console.log(`[SERVER] Deleted report folder: ${reportDir}`);
-        res.json({ message: `Deleted ${qaCode}`, qaCode });
+        res.json({ message: `Deleted ${code}`, code });
     } catch (e) {
         console.error(`[SERVER] Failed to delete ${reportDir}:`, e.message);
         res.status(500).json({ error: 'Failed to delete report: ' + e.message });
+    }
+});
+
+// API: Delete ALL report folders (reset entire system)
+app.delete('/api/reports-all', (req, res) => {
+    try {
+        if (!fs.existsSync(REPORTS_DIR)) {
+            return res.json({ message: 'No reports directory found', deleted: 0 });
+        }
+
+        const folders = fs.readdirSync(REPORTS_DIR).filter(f => {
+            const fullPath = path.join(REPORTS_DIR, f);
+            return fs.statSync(fullPath).isDirectory();
+        });
+
+        let deleted = 0;
+        for (const folder of folders) {
+            const folderPath = path.join(REPORTS_DIR, folder);
+            try {
+                fs.rmSync(folderPath, { recursive: true, force: true });
+                deleted++;
+            } catch (e) {
+                console.error(`[SERVER] Failed to delete ${folderPath}:`, e.message);
+            }
+        }
+
+        console.log(`[SERVER] Reset: Deleted ${deleted} report folders.`);
+        res.json({ message: `Deleted ${deleted} report(s)`, deleted });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to reset reports: ' + e.message });
     }
 });
 

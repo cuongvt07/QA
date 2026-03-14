@@ -1,7 +1,8 @@
 /**
- * Reporter Module — v2.1
- * Uses sequential QA codes (QA1, QA2...) for testcase folders.
- * Screenshots go directly into the QA folder: web/reports/QA1/step_1_before.png
+ * Reporter Module — v3.0
+ * Uses sequential TC codes (TC_1, TC_2...) for grouped testcase folders.
+ * Each TC folder contains case subfolders: TC_1/case_1/, TC_1/case_2/
+ * Combined report saved at: TC_1/report.json
  */
 
 const fs = require('fs');
@@ -17,34 +18,42 @@ function ensureDir(dirPath) {
 }
 
 /**
- * Get next QA code by scanning existing folders.
- * Returns 'QA1', 'QA2', etc.
+ * Get next TC code by scanning existing folders.
+ * Returns 'TC_1', 'TC_2', etc.
  */
-function getNextQaCode(baseReportDir) {
+function getNextTcCode(baseReportDir) {
     ensureDir(baseReportDir);
     const existing = fs.readdirSync(baseReportDir)
-        .filter((f) => /^QA\d+$/i.test(f))
-        .map((f) => parseInt(f.replace(/^QA/i, ''), 10))
+        .filter((f) => /^TC_\d+$/i.test(f))
+        .map((f) => parseInt(f.replace(/^TC_/i, ''), 10))
         .filter((n) => !isNaN(n));
 
     const maxNum = existing.length > 0 ? Math.max(...existing) : 0;
-    return `QA${maxNum + 1}`;
+    return `TC_${maxNum + 1}`;
 }
 
 /**
- * Create a testcase directory: web/reports/QA1/
- * Screenshots go directly in this folder (no screenshots/ subfolder).
+ * Create the parent TC directory: web/reports/TC_1/
  */
-function createTestCaseDir(baseReportDir, qaCode) {
-    const tcDir = path.join(baseReportDir, qaCode);
+function createTcDir(baseReportDir, tcCode) {
+    const tcDir = path.join(baseReportDir, tcCode);
     ensureDir(tcDir);
     return tcDir;
 }
 
 /**
- * Build final report JSON for a single test case
+ * Create a case sub-directory: web/reports/TC_1/case_1/
  */
-function buildReport({ productUrl, qaCode, testCaseLabel, timeline, errorSummary, cartResult, previewResult, startTime, aiEnabled }) {
+function createCaseDir(tcDir, caseIndex) {
+    const caseDir = path.join(tcDir, `case_${caseIndex + 1}`);
+    ensureDir(caseDir);
+    return caseDir;
+}
+
+/**
+ * Build report JSON for a single case within a test
+ */
+function buildCaseReport({ caseIndex, optionLabel, timeline, errorSummary, cartResult, previewResult, startTime, aiEnabled, is_fatal, fatal_reasons }) {
     const endTime = new Date();
     const totalSteps = timeline.length;
     const passedSteps = timeline.filter((s) => s.status === 'PASS').length;
@@ -52,19 +61,30 @@ function buildReport({ productUrl, qaCode, testCaseLabel, timeline, errorSummary
 
     // Only count visual-impacting failures for score penalty
     const visualFailedSteps = timeline.filter(
-        (s) => s.status === 'FAIL' && s.expects_visual_change !== false
+        (s) => s.status === 'FAIL' && s.expects_visual_change !== false && !s.requires_ocr
     ).length;
 
-    // Code-based score (only penalize visual failures)
+    // Count text input failures separately (diff + OCR)
+    const textDiffFailed = timeline.filter(
+        (s) => s.requires_ocr && s.code_evaluation?.status === 'FAIL'
+    ).length;
+    const ocrFailed = timeline.filter(
+        (s) => s.requires_ocr && s.ocr_evaluation?.status === 'FAIL'
+    ).length;
+
+    // Code-based score with differentiated penalties
     let codeScore = 100;
-    codeScore -= visualFailedSteps * 10;
-    codeScore -= (errorSummary.totalJsErrors || 0) * 15;
-    codeScore -= (errorSummary.totalNetworkErrors || 0) * 10;
-    if (!previewResult?.valid) codeScore -= 20;
-    if (!cartResult?.success) codeScore -= 15;
+    codeScore -= visualFailedSteps * 15;                       // Image option failures
+    codeScore -= textDiffFailed * 15;                          // Text input: preview didn't change
+    // OCR is informational only — no penalty
+    
+    // Runtime errors
+    const totalJsAndConsole = (errorSummary.totalJsErrors || 0) + (errorSummary.totalConsoleErrors || 0);
+    codeScore -= totalJsAndConsole * 10;
+    codeScore -= (errorSummary.totalNetworkErrors || 0) * 5;
     codeScore = Math.max(0, Math.min(100, codeScore));
 
-    // AI-based average score
+    // AI-based average score (informational only, stored but not blended)
     const aiScores = timeline
         .map((s) => s.ai_evaluation?.ai_score)
         .filter((s) => typeof s === 'number' && s >= 0);
@@ -72,30 +92,34 @@ function buildReport({ productUrl, qaCode, testCaseLabel, timeline, errorSummary
         ? Math.round(aiScores.reduce((a, b) => a + b, 0) / aiScores.length)
         : -1;
 
-    // Combined final score
-    let finalScore;
-    if (avgAiScore >= 0 && aiEnabled) {
-        finalScore = Math.round(codeScore * 0.5 + avgAiScore * 0.5);
-    } else {
-        finalScore = codeScore;
+    // Final score = code score only (AI is advisory)
+    let finalScore = codeScore;
+
+    // Status based on code score and visual failures only
+    const totalCriticalFails = visualFailedSteps + textDiffFailed;
+    let status = finalScore >= 70 && totalCriticalFails === 0 ? 'PASS' : 'FAIL';
+
+    // Fatal override — only for severe issues (preview crash or API fatal errors)
+    if (is_fatal) {
+        status = 'FATAL';
+        finalScore = 0;
+        codeScore = 0;
     }
 
-    const status = finalScore >= 70 && visualFailedSteps === 0 ? 'PASS' : 'FAIL';
-
     return {
-        qa_code: qaCode,
-        product_url: productUrl,
-        test_case_label: testCaseLabel || qaCode,
-        status: status,
+        case_index: caseIndex,
+        case_label: optionLabel || `Case ${caseIndex + 1}`,
+        status,
+        is_fatal: is_fatal || false,
+        fatal_reasons: fatal_reasons || [],
         score: finalScore,
         code_score: codeScore,
         ai_score: avgAiScore,
-        test_time: startTime.toISOString(),
         duration_ms: endTime - startTime,
         total_steps: totalSteps,
         passed_steps: passedSteps,
         failed_steps: failedSteps,
-        timeline: timeline,
+        timeline,
         final_evaluation: {
             js_errors: errorSummary.totalJsErrors || 0,
             console_errors: errorSummary.totalConsoleErrors || 0,
@@ -103,56 +127,73 @@ function buildReport({ productUrl, qaCode, testCaseLabel, timeline, errorSummary
             ui_interaction_score: `${Math.round((passedSteps / Math.max(totalSteps, 1)) * 100)}%`,
             preview_valid: previewResult?.valid || false,
             cart_result: cartResult?.success ? 'PASS' : 'FAIL',
-            summary: generateSummary(status, finalScore, codeScore, avgAiScore, failedSteps, errorSummary, previewResult, cartResult),
         },
     };
 }
 
 /**
- * Generate human-readable summary
+ * Build combined report from multiple case reports
  */
-function generateSummary(status, finalScore, codeScore, aiScore, failedSteps, errorSummary, previewResult, cartResult) {
-    const parts = [];
-    parts.push(`${status} — Final: ${finalScore}/100 (Code: ${codeScore}, AI: ${aiScore >= 0 ? aiScore : 'N/A'}).`);
+function buildCombinedReport({ productUrl, tcCode, cases, startTime, aiEnabled }) {
+    const totalCases = cases.length;
+    const passedCases = cases.filter((c) => c.status === 'PASS').length;
+    const scores = cases.map((c) => c.score);
+    const avgScore = Math.round(scores.reduce((a, b) => a + b, 0) / Math.max(scores.length, 1));
 
-    if (failedSteps > 0) {
-        parts.push(`${failedSteps} step(s) failed.`);
-    }
-    if ((errorSummary.totalJsErrors || 0) > 0) {
-        parts.push(`${errorSummary.totalJsErrors} JS error(s).`);
-    }
-    if ((errorSummary.totalNetworkErrors || 0) > 0) {
-        parts.push(`${errorSummary.totalNetworkErrors} network error(s).`);
-    }
-    if (!previewResult?.valid) {
-        parts.push(`Preview: ${previewResult?.error || 'FAIL'}.`);
-    }
-    if (!cartResult?.success) {
-        parts.push('Add-to-cart failed.');
-    }
-    return parts.join(' ');
+    const overallStatus = passedCases === totalCases ? 'PASS' : 'FAIL';
+
+    return {
+        tc_code: tcCode,
+        // Keep qa_code for backward compatibility with dashboard
+        qa_code: tcCode,
+        product_url: productUrl,
+        test_case_label: `${tcCode} (${totalCases} cases)`,
+        status: overallStatus,
+        score: avgScore,
+        test_time: startTime.toISOString(),
+        duration_ms: new Date() - startTime,
+        total_cases: totalCases,
+        passed_cases: passedCases,
+        failed_cases: totalCases - passedCases,
+        cases,
+        // Flat summary for backward-compatible dashboard cards
+        total_steps: cases.reduce((s, c) => s + c.total_steps, 0),
+        passed_steps: cases.reduce((s, c) => s + c.passed_steps, 0),
+        failed_steps: cases.reduce((s, c) => s + c.failed_steps, 0),
+        name: `${tcCode} (${totalCases} cases)`,
+    };
 }
 
 /**
- * Save single testcase report.
+ * Convert absolute paths in timeline to relative URLs for web dashboard
+ */
+function convertTimeline(timeline, reportsBase) {
+    if (!reportsBase || !timeline) return;
+    timeline.forEach((step) => {
+        if (step.state_before) {
+            step.state_before = toRelativeUrl(step.state_before, reportsBase);
+        }
+        if (step.state_after) {
+            step.state_after = toRelativeUrl(step.state_after, reportsBase);
+        }
+    });
+}
+
+/**
+ * Save combined report.
  * Converts absolute paths to relative URLs for web dashboard.
  */
-function saveReport(report, testCaseDir) {
+function saveCombinedReport(report, tcDir) {
     const webReport = JSON.parse(JSON.stringify(report));
-    const reportsBase = findReportsBase(testCaseDir);
+    const reportsBase = findReportsBase(tcDir);
 
-    if (reportsBase && webReport.timeline) {
-        webReport.timeline.forEach((step) => {
-            if (step.state_before) {
-                step.state_before = toRelativeUrl(step.state_before, reportsBase);
-            }
-            if (step.state_after) {
-                step.state_after = toRelativeUrl(step.state_after, reportsBase);
-            }
+    if (reportsBase && webReport.cases) {
+        webReport.cases.forEach((c) => {
+            convertTimeline(c.timeline, reportsBase);
         });
     }
 
-    const filePath = path.join(testCaseDir, 'report.json');
+    const filePath = path.join(tcDir, 'report.json');
     fs.writeFileSync(filePath, JSON.stringify(webReport, null, 2), 'utf-8');
     return filePath;
 }
@@ -170,7 +211,7 @@ function findReportsBase(dirPath) {
 }
 
 /**
- * Convert absolute path to relative URL path (e.g. /reports/QA1/step_1_before.png)
+ * Convert absolute path to relative URL path
  */
 function toRelativeUrl(absPath, basePath) {
     if (!absPath || !basePath) return absPath;
@@ -183,21 +224,30 @@ function toRelativeUrl(absPath, basePath) {
 }
 
 /**
- * Print summary to console
+ * Print summary for a single case to console
  */
-function printSummary(report) {
-    const label = report.qa_code || report.test_case_label;
-    console.log(`\n  ${'─'.repeat(46)}`);
-    console.log(`  ${label} │ ${report.status} │ Score: ${report.score}/100`);
-    console.log(`  Code: ${report.code_score} │ AI: ${report.ai_score >= 0 ? report.ai_score : 'N/A'} │ Steps: ${report.passed_steps}/${report.total_steps}`);
-    console.log(`  ${'─'.repeat(46)}\n`);
+function printCaseSummary(caseReport, caseIndex) {
+    console.log(`    Case ${caseIndex + 1}: ${caseReport.case_label} │ ${caseReport.status} │ Score: ${caseReport.score}/100 │ Steps: ${caseReport.passed_steps}/${caseReport.total_steps}`);
+}
+
+/**
+ * Print combined summary to console
+ */
+function printCombinedSummary(report) {
+    console.log(`\n  ${'─'.repeat(50)}`);
+    console.log(`  ${report.tc_code} │ ${report.status} │ Avg Score: ${report.score}/100`);
+    console.log(`  Cases: ${report.passed_cases}/${report.total_cases} passed │ Total Steps: ${report.passed_steps}/${report.total_steps}`);
+    console.log(`  ${'─'.repeat(50)}\n`);
 }
 
 module.exports = {
     ensureDir,
-    getNextQaCode,
-    createTestCaseDir,
-    buildReport,
-    saveReport,
-    printSummary,
+    getNextTcCode,
+    createTcDir,
+    createCaseDir,
+    buildCaseReport,
+    buildCombinedReport,
+    saveCombinedReport,
+    printCaseSummary,
+    printCombinedSummary,
 };
