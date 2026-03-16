@@ -50,7 +50,7 @@ const argv = yargs
         alias: 'r',
         describe: 'Base directory for reports',
         type: 'string',
-        default: path.resolve(__dirname, '../../web/reports'),
+        default: path.resolve(__dirname, '../web/reports'),
     })
     .option('no-ai', {
         describe: 'Disable AI evaluation',

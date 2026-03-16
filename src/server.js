@@ -8,7 +8,7 @@ const { spawn } = require('child_process');
 const app = express();
 const PORT = process.env.PORT || 8090;
 
-const WEB_DIR = path.resolve(__dirname, '../../web');
+const WEB_DIR = path.resolve(__dirname, '../web');
 const REPORTS_DIR = path.join(WEB_DIR, 'reports');
 
 app.use(cors());

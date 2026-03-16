@@ -1,4 +1,5 @@
 .env
 node_modules/
 reports/
+web/reports/
 .DS_Store
