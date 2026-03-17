@@ -3,9 +3,11 @@
 Engine tu dong test E2E cho website custom product:
 
 - Tu dong thao tac customizer (text, dropdown, image option, file upload).
-- Validate thay doi preview bang code diff + AI.
+- Tu dong phat hien va chon Product Variants (Style/Size) ben ngoai widget.
+- Validate thay doi preview bang code diff (Async) + AI.
+- Toi uu toc do voi smartWait (1s) va bo qua tracking requests.
 - Verify Add to Cart + chup bang chung popup mini cart ben phai.
-- Sinh report JSON + screenshot de xem tren dashboard.
+- Sinh report JSON + screenshot + performance logs.
 
 Tai lieu chi tiet ky thuat: [tong-hop-ky-thuat-cong-nghe-giai-phap.md](./tong-hop-ky-thuat-cong-nghe-giai-phap.md)
 

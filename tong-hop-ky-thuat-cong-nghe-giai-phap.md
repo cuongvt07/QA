@@ -87,7 +87,8 @@ Kien truc chia 3 lop chinh:
 2. Mo browser Playwright (co headless option).
 3. Navigate trang san pham.
 4. Tu dong an popup/quang cao bang JS injection (khong click random element).
-5. Detect customizer widget.
+590. Detect customizer widget.
+91. Tu dong quet va chon cac bien the san pham (Style/Size) ben ngoai customizer de dam bao co the "Add to Cart" thanh cong.
 
 ## 4.2 Quet option va tao test cases
 
@@ -109,13 +110,18 @@ Kien truc chia 3 lop chinh:
   - `image_option`: chon swatch/variant.
   - `file_upload`: upload anh tu `images/` (neu khong truyen `customImageFilename` se dung mac dinh `test-dog.png`; neu co truyen se uu tien file duoc truyen, neu khong ton tai thi fallback ve mac dinh).
 - Moi step deu chup `before` va `after`.
-- Dung `smartWait()` de cho render on dinh (co theo doi request xhr/fetch).
+- Dung `smartWait()` de cho render on dinh:
+  - Tu dong bo qua cac request tu tracking/analytics (GA, FB, Klaviyo, v.v.) de tranh cho doi vo ich.
+  - Giam thoi gian cho bat dau xuong 1s (truoc day la 2s).
+  - Ho tro placeholder loading spinner detection voi timeout 20s.
 
 ## 4.4 Validation va scoring
 
 1. Pixel diff:
    - So sanh anh before/after bang `pixelmatch`.
-   - Nguong pass cho visual step > `0.01%`.
+   - **Co che Auto-Pass**: Tu dong PASS neu diff <= 0.05% (neu bat `DIFF_AUTO_PASS_ZERO`) hoac diff >= `DIFF_AUTO_PASS_HIGH`.
+   - **Xy ly thay doi nho**: Coi moi thay doi >= 0.01% la PASS (phu hop voi nhap text ngan).
+   - **Hieu nang**: Xu ly doc va parse PNG theo co che bat dong bo (Async) de khong lam nghen CPU khi chay parallel.
 2. Preview validation:
    - Check image/canvas co render dung khong.
    - Bat cac loi nhu `BROKEN_IMAGE_LINK`, `CANVAS_CRASH`, `PREVIEW_RENDER_FAIL`.
@@ -185,6 +191,8 @@ Kien truc chia 3 lop chinh:
 - Co evidence rieng cho Add to Cart popup ben phai.
 - Cac option mau co them metadata mau (`option_color_hex`) va hien thi swatch + ma mau tren timeline/UI.
 - Dashboard xem timeline, score, errors, case tabs.
+- **Scrollable Timeline**: Step timeline hien tai co the cuon (scroll) de de dang quan ly cac case co nhieu buoc ma khong lam vo giao dien.
+- **Performance Logging**: CLI in ra thoi gian thuc hien cho tung giai doan (Navigation, Variants, Customization, Evaluation, AI Review) de de dang tim "nut that" hieu nang.
 
 ---
 
