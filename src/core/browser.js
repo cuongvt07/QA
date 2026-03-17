@@ -16,13 +16,16 @@ const BLOCKED_DOMAINS = [
     'hotjar.com',
     'tiktok.com',
     'snapchat.com',
+    'klaviyo.com',
+    'omnisend.com',
+    'privy.com',
 ];
 
 /**
- * Launch a headless Chromium browser and return { browser, context, page }
+ * Launch the base browser instance
  */
-async function launchBrowser(options = {}) {
-    const browser = await chromium.launch({
+async function launchCoreBrowser(options = {}) {
+    return await chromium.launch({
         headless: options.headless !== false,
         args: [
             '--no-sandbox',
@@ -30,7 +33,12 @@ async function launchBrowser(options = {}) {
             '--disable-dev-shm-usage',
         ],
     });
+}
 
+/**
+ * Create an isolated context with optimal settings
+ */
+async function createStandardContext(browser) {
     const context = await browser.newContext({
         viewport: { width: 1440, height: 900 },
         userAgent:
@@ -39,7 +47,7 @@ async function launchBrowser(options = {}) {
         timezoneId: 'America/New_York',
     });
 
-    // Route config
+    // 1. Route config
     await context.route('**/*', (route) => {
         const url = route.request().url();
         const resourceType = route.request().resourceType();
@@ -55,6 +63,16 @@ async function launchBrowser(options = {}) {
         return route.continue();
     });
 
+    return context;
+}
+
+/**
+ * Launch a headless Chromium browser and return { browser, context, page }
+ * (Legacy support)
+ */
+async function launchBrowser(options = {}) {
+    const browser = await launchCoreBrowser(options);
+    const context = await createStandardContext(browser);
     const page = await context.newPage();
 
     return { browser, context, page };
@@ -62,9 +80,9 @@ async function launchBrowser(options = {}) {
 
 /**
  * Navigate to a product URL and wait for page load.
- * Uses multi-phase popup cleanup: initial + delayed.
+ * Now uses DYNAMIC waiting for the customizer instead of fixed timeouts.
  */
-async function navigateToProduct(page, url) {
+async function navigateToProduct(page, url, skipLongWait = false) {
     try {
         await page.goto(url, {
             waitUntil: 'domcontentloaded',
@@ -78,12 +96,17 @@ async function navigateToProduct(page, url) {
         });
     }
 
-    // Phase 1: Wait 8s for all popups to appear (Klaviyo, Promolayer, etc.)
-    await page.waitForTimeout(8000);
-    await hideAdPopups(page);
-
-    // Phase 2: Wait 3s more for any late popups
-    await page.waitForTimeout(3000);
+    // Use 15s wait for first case, shorter 3s for subsequent cases
+    if (!skipLongWait) {
+        console.log('    ⏳ Waiting 15s for page and popups to settle...');
+        await page.waitForTimeout(15000);
+    } else {
+        console.log('    ⏳ Quick wait 3s (subsequent case)...');
+        await page.waitForTimeout(3000);
+    }
+    
+    // Final cleanup before returning to start the test steps
+    console.log('    🧹 Running final pre-test cleanup...');
     await hideAdPopups(page);
 }
 
@@ -108,68 +131,52 @@ async function ensureCleanPage(page) {
  */
 async function hideAdPopups(page) {
     await page.evaluate(() => {
-        // 1. Klaviyo popup — "TAKE 10% OFF" email form
-        //    Exact class: .needsclick.kl-private-reset-css-Xuajs1
-        document.querySelectorAll('.needsclick.kl-private-reset-css-Xuajs1, [class*="kl-private-reset-css"]').forEach((el) => {
-            el.style.setProperty('display', 'none', 'important');
-            // Also hide the parent wrapper div
-            if (el.parentElement) {
-                el.parentElement.style.setProperty('display', 'none', 'important');
-            }
+        // 1. Klaviyo & Email popups
+        document.querySelectorAll('.needsclick, [class*="kl-private"], [class*="klaviyo"], div[data-testid="klaviyo-form"]').forEach((el) => {
+            el.remove();
         });
-        document.querySelectorAll('div[data-testid="klaviyo-form"]').forEach((el) => {
-            el.style.setProperty('display', 'none', 'important');
-        });
-        // Hide Klaviyo fixed backdrop
-        document.querySelectorAll('[class*="klaviyo"]').forEach((el) => {
-            if (window.getComputedStyle(el).position === 'fixed') {
-                el.style.setProperty('display', 'none', 'important');
+
+        // 2. Generic Popups/Modals/Overlays
+        document.querySelectorAll('.modal, .popup, .overlay, [id*="popup"], [id*="modal"], [class*="popup"], [class*="modal"]').forEach((el) => {
+            const text = (el.innerText || '').toLowerCase();
+            const isAd = text.includes('off') || text.includes('discount') || text.includes('newsletter') || text.includes('subscribe') || text.includes('email') || text.includes('sign up');
+            const isInsideCustomizer = el.closest('#formCustomization, .customily-app, .customily-form-content');
+            
+            if (isAd && !isInsideCustomizer) {
+                el.remove();
             }
         });
 
-        // 2. Promolayer countdown widget — "Grab your deal" bar
-        document.querySelectorAll('.ply-widget, [id^="plyWidget"]').forEach((el) => {
-            el.style.setProperty('display', 'none', 'important');
+        // 3. Promolayer & Bars
+        document.querySelectorAll('.ply-widget, [id^="plyWidget"], .promo-bar, [class*="promo-bar"]').forEach((el) => {
+            el.remove();
         });
 
-        // 3. Generic popup dialogs (but NOT the product customizer)
-        document.querySelectorAll('[role="dialog"]').forEach((el) => {
-            const label = (el.getAttribute('aria-label') || '').toLowerCase();
-            const isAdPopup = label.includes('popup')
-                || label.includes('newsletter')
-                || label.includes('discount')
-                || label.includes('subscribe')
-                || label.includes('email');
-            if (isAdPopup) {
-                el.style.setProperty('display', 'none', 'important');
-            }
+        // 4. Fixed Close Buttons that might be floating
+        document.querySelectorAll('[class*="close-popup"], [class*="modal__close"], [class*="popup__close"]').forEach(el => {
+            el.remove();
         });
 
-        // 4. Fixed-position overlays with very high z-index (>9000)
-        //    Skip anything inside the product customizer area
+        // 5. Fixed-position overlays with very high z-index
         const safeParents = [
             '#formCustomization', '.customily-app', '.customily-form-content',
-            '.product-info', '.product-form', '#product-form',
-            '[class*="customiz"]', '[class*="personaliz"]',
+            '.product-info', '.product-form', '#product-form'
         ];
 
-        document.querySelectorAll('body > div, body > section').forEach((el) => {
+        document.querySelectorAll('div, section, aside').forEach((el) => {
             const style = window.getComputedStyle(el);
             const zIndex = parseInt(style.zIndex) || 0;
-            if (style.position === 'fixed' && zIndex > 9000) {
-                const isSafe = safeParents.some((sel) => el.matches(sel) || el.querySelector(sel));
+            if (style.position === 'fixed' && zIndex > 500) {
+                const isSafe = safeParents.some((sel) => el.matches(sel) || el.closest(sel));
                 if (!isSafe) {
-                    el.style.setProperty('display', 'none', 'important');
+                    el.remove();
                 }
             }
         });
 
-        // 5. Remove modal backdrops
-        document.querySelectorAll('.modal-backdrop, [class*="backdrop"]').forEach((el) => {
-            const style = window.getComputedStyle(el);
-            if (style.position === 'fixed') {
-                el.style.setProperty('display', 'none', 'important');
-            }
+        // 6. Remove backdrops
+        document.querySelectorAll('.modal-backdrop, [class*="backdrop"], .overlay-bg').forEach((el) => {
+            el.remove();
         });
     });
 }
@@ -184,6 +191,8 @@ async function closeBrowser(browser) {
 }
 
 module.exports = {
+    launchCoreBrowser,
+    createStandardContext,
     launchBrowser,
     navigateToProduct,
     closeBrowser,

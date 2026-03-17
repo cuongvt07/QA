@@ -1,15 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Automated Custom Product Testing Tool - Dashboard for managing E2E test cases and viewing detailed test reports.">
+    <meta name="description"
+        content="Automated Custom Product Testing Tool - Dashboard for managing E2E test cases and viewing detailed test reports.">
     <title>QA Dashboard - Custom Product Testing Tool</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="css/dashboard.css">
 </head>
+
 <body>
     <!-- Sidebar Navigation -->
     <aside id="sidebar" class="sidebar">
@@ -19,19 +24,43 @@
         </div>
         <nav class="sidebar-nav">
             <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7" rx="1" />
+                    <rect x="14" y="3" width="7" height="7" rx="1" />
+                    <rect x="3" y="14" width="7" height="7" rx="1" />
+                    <rect x="14" y="14" width="7" height="7" rx="1" />
+                </svg>
                 <span>Dashboard</span>
             </a>
             <a href="#" class="nav-item" data-page="test-cases" id="nav-test-cases">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+                    <rect x="9" y="3" width="6" height="4" rx="1" />
+                    <path d="M9 14l2 2 4-4" />
+                </svg>
                 <span>Test Cases</span>
             </a>
             <a href="#" class="nav-item" data-page="history" id="nav-history">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                </svg>
                 <span>History</span>
             </a>
+            <a href="#" class="nav-item" data-page="products" id="nav-products">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 8V21H3V8" />
+                    <path d="M1 3H23V8H1V3Z" />
+                    <path d="M10 12H14" />
+                </svg>
+                <span>Product Crawler</span>
+            </a>
             <a href="#" class="nav-item" data-page="settings" id="nav-settings">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                        d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                </svg>
                 <span>Settings</span>
             </a>
         </nav>
@@ -49,55 +78,127 @@
             </div>
             <div class="header-right">
                 <div class="search-box" id="search-container">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
                     <input type="text" placeholder="Search test cases..." id="search-input">
                 </div>
-                <label class="toggle-switch" style="margin-right: 16px; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.85rem;">
+                <label class="toggle-switch"
+                    style="margin-right: 16px; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.85rem;">
                     <input type="checkbox" id="checkbox-headless" checked style="accent-color: var(--accent-primary);">
                     Run Headless (Background)
                 </label>
-                <label class="toggle-switch" style="margin-right: 16px; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.85rem;" title="Dùng AI (Gemini) để check lỗi nghiêm trọng ở ảnh Preview cuối cùng">
+                <label class="toggle-switch"
+                    style="margin-right: 16px; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.85rem;"
+                    title="Dùng AI (Gemini) để check lỗi nghiêm trọng ở ảnh Preview cuối cùng">
                     <input type="checkbox" id="checkbox-use-ai" style="accent-color: var(--accent-primary);">
                     Use AI for Final Image Review
                 </label>
+                <button class="btn-ghost" id="btn-sync-data" style="margin-right: 8px;" title="Sync data from server">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        id="icon-sync">
+                        <path d="M23 4v6h-6" />
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                    </svg>
+                    <span>Sync Data</span>
+                </button>
                 <button class="btn-ghost" id="btn-import-report" style="margin-right: 8px;">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
                     Import Report
                 </button>
                 <input type="file" id="import-report-input" accept=".json" style="display:none" multiple>
                 <button class="btn-primary" id="btn-new-test">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
                     New Test
                 </button>
             </div>
         </header>
+        
+        <!-- Filter Bar -->
+        <div class="filter-bar glass-panel" id="filter-bar">
+            <div class="filter-group">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                </svg>
+                <span>Filters:</span>
+            </div>
+            <div class="filter-group">
+                <label for="filter-status">Status</label>
+                <select id="filter-status">
+                    <option value="ALL">All Status</option>
+                    <option value="PASS">PASS</option>
+                    <option value="FAIL">FAIL</option>
+                    <option value="RUNNING">RUNNING</option>
+                    <option value="QUEUED">QUEUED</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label for="filter-date">Date Range</label>
+                <select id="filter-date">
+                    <option value="ALL">All Time</option>
+                    <option value="TODAY">Today</option>
+                    <option value="YESTERDAY">Yesterday</option>
+                    <option value="WEEK">Last 7 Days</option>
+                </select>
+            </div>
+            <div class="filter-group" id="filter-count-container" style="margin-left: auto; color: var(--text-muted); font-size: 0.8rem;">
+                Showing <span id="filter-match-count">0</span> runs
+            </div>
+        </div>
 
         <!-- Page: Dashboard Overview -->
         <section id="page-dashboard" class="page active">
             <div class="stats-grid">
                 <div class="stat-card glass-panel" id="stat-total">
                     <div class="stat-icon bg-blue">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <polyline points="14 2 14 8 20 8" />
+                        </svg>
                     </div>
-                    <div class="stat-info"><span class="stat-value">0</span><span class="stat-label">Total Tests</span></div>
+                    <div class="stat-info"><span class="stat-value">0</span><span class="stat-label">Total Tests</span>
+                    </div>
                 </div>
                 <div class="stat-card glass-panel" id="stat-passed">
                     <div class="stat-icon bg-green">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                            <polyline points="22 4 12 14.01 9 11.01" />
+                        </svg>
                     </div>
                     <div class="stat-info"><span class="stat-value">0</span><span class="stat-label">Passed</span></div>
                 </div>
                 <div class="stat-card glass-panel" id="stat-failed">
                     <div class="stat-icon bg-red">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <circle cx="12" cy="12" r="10" />
+                            <line x1="15" y1="9" x2="9" y2="15" />
+                            <line x1="9" y1="9" x2="15" y2="15" />
+                        </svg>
                     </div>
                     <div class="stat-info"><span class="stat-value">0</span><span class="stat-label">Failed</span></div>
                 </div>
                 <div class="stat-card glass-panel" id="stat-avgScore">
                     <div class="stat-icon bg-amber">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polygon
+                                points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                        </svg>
                     </div>
-                    <div class="stat-info"><span class="stat-value">—</span><span class="stat-label">Avg Score</span></div>
+                    <div class="stat-info"><span class="stat-value">—</span><span class="stat-label">Avg Score</span>
+                    </div>
                 </div>
             </div>
 
@@ -108,22 +209,125 @@
             <div id="recent-runs-list" class="runs-list">
                 <!-- Populated by JS -->
                 <div class="empty-state glass-panel">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                        opacity="0.4">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                    </svg>
                     <p>No test runs yet. Click <strong>"New Test"</strong> to start.</p>
                 </div>
             </div>
+            <div id="pagination-dashboard" class="pagination-container"></div>
         </section>
 
         <!-- Page: Test Cases List -->
         <section id="page-test-cases" class="page">
             <div class="section-header">
                 <h2>All Test Cases</h2>
+                <div class="batch-actions" style="display: flex; gap: 8px;">
+                    <button class="btn-ghost btn-sm" id="btn-select-all">Select All</button>
+                    <button class="btn-primary btn-sm" id="btn-run-selected" style="background: var(--accent-success); border-color: var(--accent-success); display: none;">
+                        Run Selected (<span id="selected-count">0</span>)
+                    </button>
+                </div>
             </div>
             <div id="test-cases-list" class="test-cases-grid">
                 <div class="empty-state glass-panel">
                     <p>No test cases configured yet.</p>
                 </div>
             </div>
+            <div id="pagination-test-cases" class="pagination-container"></div>
+        </section>
+
+            </div>
+        </section>
+
+        <!-- Page: Product Crawler -->
+        <section id="page-products" class="page">
+            <div class="section-header">
+                <h2>Product Crawler</h2>
+            </div>
+            
+            <div class="glass-panel" style="padding: 24px; margin-bottom: 24px;">
+                <div class="form-group" style="margin-bottom: 16px;">
+                    <label for="crawler-ids" style="display: block; margin-bottom: 8px;">Product IDs (one per line)</label>
+                    <textarea id="crawler-ids" class="glass-input" style="width: 100%; height: 120px; padding: 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); font-family: 'Fira Code', monospace; font-size: 0.9rem;" placeholder="380919&#10;810289&#10;..."></textarea>
+                </div>
+                
+                <div style="display: flex; align-items: flex-end; gap: 24px;">
+                    <div class="form-group" style="padding-bottom: 4px;">
+                        <label style="display: block; margin-bottom: 12px; font-size: 0.9rem; color: var(--text-secondary);">Select Platform</label>
+                        <div style="display: flex; gap: 20px;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text-primary); font-size: 0.95rem;">
+                                <input type="radio" name="crawler-platform" value="printerval.com" checked style="width: 18px; height: 18px; accent-color: var(--accent-primary);">
+                                Printerval
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text-primary); font-size: 0.95rem;">
+                                <input type="radio" name="crawler-platform" value="meear.com" style="width: 18px; height: 18px; accent-color: var(--accent-primary);">
+                                Meear
+                            </label>
+                        </div>
+                    </div>
+                    <div style="flex: 1;"></div>
+                    <button class="btn-primary" id="btn-start-crawl" style="height: 42px; padding: 0 24px;">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.778-7.778z"/><path d="M12 7V3m4 4l3-3m-9 4l-3-3m4 9l-3 3"/>
+                        </svg>
+                        Start Crawling
+                    </button>
+                    <button class="btn-ghost" id="btn-sync-products" style="height: 42px;">
+                        Sync Data
+                    </button>
+                </div>
+
+                <div id="crawler-progress" style="margin-top: 16px; display: none;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.85rem;">
+                        <span id="crawler-progress-label">Processing...</span>
+                        <span id="crawler-progress-count">0/0</span>
+                    </div>
+                    <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;">
+                        <div id="crawler-progress-bar" style="width: 0%; height: 100%; background: var(--accent-primary); transition: width 0.3s ease;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section-header">
+                <h3>Crawled Products</h3>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <div id="product-list-count" style="font-size: 0.85rem; color: var(--text-muted); margin-right: 8px;">0 products found</div>
+                    <button class="btn-primary btn-sm" id="btn-convert-to-test-cases" style="background: var(--accent-success); border-color: var(--accent-success); display: none;">
+                        Create Test Cases (<span id="convert-products-count">0</span>)
+                    </button>
+                    <button class="btn-primary btn-sm" id="btn-delete-selected-products" style="background: var(--accent-danger); border-color: var(--accent-danger); display: none;">
+                        Delete Selected (<span id="selected-products-count">0</span>)
+                    </button>
+                </div>
+            </div>
+
+            <div class="glass-panel" style="overflow: hidden;">
+                <table class="data-table" id="table-products" style="width: 100%; border-collapse: collapse; text-align: left;">
+                    <thead>
+                        <tr style="background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border-subtle);">
+                            <th style="padding: 12px 16px; width: 40px;">
+                                <input type="checkbox" id="check-all-products" style="width: 16px; height: 16px; cursor: pointer;">
+                            </th>
+                            <th style="padding: 12px 16px; font-size: 0.85rem; color: var(--text-secondary);">PID</th>
+                            <th style="padding: 12px 16px; font-size: 0.85rem; color: var(--text-secondary);">Platform</th>
+                            <th style="padding: 12px 16px; font-size: 0.85rem; color: var(--text-secondary);">Redirect URL</th>
+                            <th style="padding: 12px 16px; font-size: 0.85rem; color: var(--text-secondary);">Custom</th>
+                            <th style="padding: 12px 16px; font-size: 0.85rem; color: var(--text-secondary);">Last Check</th>
+                            <th style="padding: 12px 16px; font-size: 0.85rem; color: var(--text-secondary);">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="products-tbody">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+                <div id="products-empty" class="empty-state" style="padding: 40px; text-align: center;">
+                    <p style="color: var(--text-muted);">No products crawled yet.</p>
+                </div>
+            </div>
+            <div id="pagination-products" class="pagination-container"></div>
         </section>
 
         <!-- Page: History / Timeline -->
@@ -155,24 +359,67 @@
                         <option value="false">No (Visible browser)</option>
                     </select>
                 </div>
-                <button class="btn-primary" id="btn-save-settings">Save Settings</button>
+                <div class="form-group">
+                    <label for="setting-custom-image">Default Custom Image for Uploads (Optional)</label>
+                    <input type="file" id="setting-custom-image" accept="image/*"
+                        style="display:block; margin-top:8px;">
+                    <small style="color:var(--text-muted);display:block;margin-top:4px;">If provided, this image will be
+                        used when a product requires a file upload. Otherwise, a default 'dog' image is used.</small>
+                    <div id="setting-custom-image-preview" style="margin-top:8px; display:none;">
+                        <img src="" style="max-height:100px; border-radius:4px; border:1px solid var(--border-subtle);">
+                    </div>
+                </div>
+
+                <div class="form-group" style="margin-top: 24px;">
+                    <label style="font-weight: 600; font-size: 1.1rem; color: var(--accent-primary); display: block; margin-bottom: 16px;">Test Evaluation Logic</label>
+                    
+                    <div style="background: rgba(255,255,255,0.03); padding: 16px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+                        <label class="toggle-switch" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 16px;">
+                            <input type="checkbox" id="setting-auto-pass-zero" style="width: 18px; height: 18px; accent-color: var(--accent-primary);">
+                            <div style="flex: 1;">
+                                <span style="display: block; font-weight: 500;">Auto-Pass: 0% Diff (No Change)</span>
+                                <small style="color: var(--text-muted);">Mark step as PASS automatically when no visual change is detected (likely a non-impacting option).</small>
+                            </div>
+                        </label>
+
+                        <div class="form-group" style="margin-top: 16px;">
+                            <label for="setting-auto-pass-high" style="font-size: 0.9rem;">Auto-Pass Threshold: High Diff (%)</label>
+                            <div style="display: flex; align-items: center; gap: 12px; margin-top: 8px;">
+                                <input type="number" id="setting-auto-pass-high" value="50" min="10" max="100" style="width: 80px;">
+                                <small style="color: var(--text-muted);">Mark step as PASS if visual change exceeds this % (useful for template reloads). Default: 50%</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="btn-primary" id="btn-save-settings" style="margin-top: 24px;">Save Settings</button>
             </div>
 
             <!-- Reset All Data -->
             <div class="settings-form glass-panel" style="margin-top: 24px; border: 1px solid rgba(239, 68, 68, 0.3);">
                 <div class="form-group" style="margin-bottom: 0;">
-                    <label style="color: var(--accent-danger); font-weight: 600; font-size: 1rem; display: flex; align-items: center; gap: 8px;">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                    <label
+                        style="color: var(--accent-danger); font-weight: 600; font-size: 1rem; display: flex; align-items: center; gap: 8px;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M3 6h18" />
+                            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                            <line x1="10" y1="11" x2="10" y2="17" />
+                            <line x1="14" y1="11" x2="14" y2="17" />
                         </svg>
                         Reset Entire System
                     </label>
                     <p style="color: var(--text-muted); font-size: 0.85rem; margin: 8px 0 16px;">
-                        This will permanently delete <strong>all test cases</strong>, <strong>all test runs</strong>, and <strong>all reports</strong> from the dashboard. This action cannot be undone.
+                        This will permanently delete <strong>all test cases</strong>, <strong>all test runs</strong>,
+                        and <strong>all reports</strong> from the dashboard. This action cannot be undone.
                     </p>
-                    <button class="btn-primary" id="btn-reset-all" style="background: var(--accent-danger); border-color: var(--accent-danger); display: flex; align-items: center; gap: 8px;">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                    <button class="btn-primary" id="btn-reset-all"
+                        style="background: var(--accent-danger); border-color: var(--accent-danger); display: flex; align-items: center; gap: 8px;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polyline points="1 4 1 10 7 10" />
+                            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
                         </svg>
                         Reset All Data
                     </button>
@@ -197,7 +444,10 @@
                 <div class="modal-footer">
                     <button class="btn-ghost" id="btn-cancel-modal">Cancel</button>
                     <button class="btn-primary" id="btn-submit-test">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
                         Run Test
                     </button>
                 </div>
@@ -216,8 +466,26 @@
                 </div>
             </div>
         </div>
+
+        <!-- Modal: Generic Popup (Alert/Confirm) -->
+        <div id="modal-popup" class="modal-overlay" style="display: none; z-index: 2000;">
+            <div class="modal glass-panel" style="max-width: 400px;">
+                <div class="modal-header">
+                    <h2 id="popup-title">Notification</h2>
+                    <button class="modal-close" id="btn-close-popup">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p id="popup-message" style="line-height: 1.5; color: var(--text-primary);"></p>
+                </div>
+                <div class="modal-footer" id="popup-footer">
+                    <button class="btn-ghost" id="btn-popup-cancel">Cancel</button>
+                    <button class="btn-primary" id="btn-popup-ok">OK</button>
+                </div>
+            </div>
+        </div>
     </main>
 
     <script src="js/dashboard.js"></script>
 </body>
+
 </html>

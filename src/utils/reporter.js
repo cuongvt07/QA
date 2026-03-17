@@ -59,29 +59,40 @@ function buildCaseReport({ caseIndex, optionLabel, timeline, errorSummary, cartR
     const passedSteps = timeline.filter((s) => s.status === 'PASS').length;
     const failedSteps = timeline.filter((s) => s.status === 'FAIL').length;
 
-    // Only count visual-impacting failures for score penalty
-    const visualFailedSteps = timeline.filter(
+    // Only count visual-impacting failures for score penalty (customization steps only)
+    const customizeSteps = timeline.filter((s) => s.group_type !== 'lifecycle');
+    const visualFailedSteps = customizeSteps.filter(
         (s) => s.status === 'FAIL' && s.expects_visual_change !== false && !s.requires_ocr
     ).length;
 
     // Count text input failures separately (diff + OCR)
-    const textDiffFailed = timeline.filter(
+    const textDiffFailed = customizeSteps.filter(
         (s) => s.requires_ocr && s.code_evaluation?.status === 'FAIL'
     ).length;
-    const ocrFailed = timeline.filter(
-        (s) => s.requires_ocr && s.ocr_evaluation?.status === 'FAIL'
-    ).length;
+
+    // Lifecycle step penalties
+    const lifecycleSteps = timeline.filter((s) => s.group_type === 'lifecycle');
+    const openPageFail = lifecycleSteps.find((s) => s.action === 'open_page' && s.status === 'FAIL') ? 1 : 0;
+    const loadCustFail = lifecycleSteps.find((s) => s.action === 'load_customizer' && s.status === 'FAIL') ? 1 : 0;
+    const previewFail = lifecycleSteps.find((s) => s.action === 'validate_preview' && s.status === 'FAIL') ? 1 : 0;
+    const cartFail = lifecycleSteps.find((s) => s.action === 'add_to_cart' && s.status === 'FAIL') ? 1 : 0;
 
     // Code-based score with differentiated penalties
+    const visualPenalty = visualFailedSteps * 15;
+    const textDiffPenalty = textDiffFailed * 15;
+    const openPagePenalty = openPageFail * 10;
+    const loadCustPenalty = loadCustFail * 15;
+    const previewPenalty = previewFail * 15;
+    const cartPenalty = cartFail * 10;
+
     let codeScore = 100;
-    codeScore -= visualFailedSteps * 15;                       // Image option failures
-    codeScore -= textDiffFailed * 15;                          // Text input: preview didn't change
-    // OCR is informational only — no penalty
-    
-    // Runtime errors
-    const totalJsAndConsole = (errorSummary.totalJsErrors || 0) + (errorSummary.totalConsoleErrors || 0);
-    codeScore -= totalJsAndConsole * 10;
-    codeScore -= (errorSummary.totalNetworkErrors || 0) * 5;
+    codeScore -= visualPenalty;
+    codeScore -= textDiffPenalty;
+    codeScore -= openPagePenalty;
+    codeScore -= loadCustPenalty;
+    codeScore -= previewPenalty;
+    codeScore -= cartPenalty;
+    // NOTE: JS/Console/Network errors are logged only — NO score penalty
     codeScore = Math.max(0, Math.min(100, codeScore));
 
     // AI-based average score (informational only, stored but not blended)
@@ -106,6 +117,21 @@ function buildCaseReport({ caseIndex, optionLabel, timeline, errorSummary, cartR
         codeScore = 0;
     }
 
+    // Score breakdown for transparency
+    const scoreBreakdown = {
+        base_score: 100,
+        visual_fail_count: visualFailedSteps,
+        visual_fail_penalty: -visualPenalty,
+        text_diff_fail_count: textDiffFailed,
+        text_diff_penalty: -textDiffPenalty,
+        open_page_penalty: -openPagePenalty,
+        load_customizer_penalty: -loadCustPenalty,
+        preview_validation_penalty: -previewPenalty,
+        add_to_cart_penalty: -cartPenalty,
+        final_score: finalScore,
+        note: 'JS/Console/Network errors are logged only, not penalized in score',
+    };
+
     return {
         case_index: caseIndex,
         case_label: optionLabel || `Case ${caseIndex + 1}`,
@@ -113,6 +139,7 @@ function buildCaseReport({ caseIndex, optionLabel, timeline, errorSummary, cartR
         is_fatal: is_fatal || false,
         fatal_reasons: fatal_reasons || [],
         score: finalScore,
+        score_breakdown: scoreBreakdown,
         code_score: codeScore,
         ai_score: avgAiScore,
         duration_ms: endTime - startTime,
@@ -137,13 +164,41 @@ function buildCaseReport({ caseIndex, optionLabel, timeline, errorSummary, cartR
 /**
  * Build combined report from multiple case reports
  */
-function buildCombinedReport({ productUrl, tcCode, cases, startTime, aiEnabled }) {
+function buildCombinedReport({ productUrl, tcCode, cases, startTime, aiEnabled, variants_selected = [] }) {
     const totalCases = cases.length;
     const passedCases = cases.filter((c) => c.status === 'PASS').length;
     const scores = cases.map((c) => c.score);
     const avgScore = Math.round(scores.reduce((a, b) => a + b, 0) / Math.max(scores.length, 1));
 
     const overallStatus = passedCases === totalCases ? 'PASS' : 'FAIL';
+
+    // Aggregate errors from all cases at root level
+    const errors = [];
+    const screenshots = [];
+    cases.forEach((c) => {
+        const ev = c.final_evaluation || {};
+        // JS errors
+        (ev.js_errors_list || []).forEach((e) => {
+            errors.push({ type: 'js', case_index: c.case_index, ...e });
+        });
+        // Console errors
+        (ev.console_errors_list || []).forEach((e) => {
+            errors.push({ type: 'console', case_index: c.case_index, ...e });
+        });
+        // Network errors
+        (ev.network_errors_list || []).forEach((e) => {
+            errors.push({ type: 'network', case_index: c.case_index, ...e });
+        });
+        // Collect screenshots from timeline
+        (c.timeline || []).forEach((step) => {
+            if (step.state_before) screenshots.push({ case_index: c.case_index, step_id: step.step_id, type: 'before', path: step.state_before });
+            if (step.state_after) screenshots.push({ case_index: c.case_index, step_id: step.step_id, type: 'after', path: step.state_after });
+        });
+        // HTML snapshots
+        if (c.html_snapshot) {
+            screenshots.push({ case_index: c.case_index, type: 'html_snapshot', path: c.html_snapshot });
+        }
+    });
 
     return {
         tc_code: tcCode,
@@ -154,10 +209,13 @@ function buildCombinedReport({ productUrl, tcCode, cases, startTime, aiEnabled }
         status: overallStatus,
         score: avgScore,
         test_time: startTime.toISOString(),
+        variants_selected,
         duration_ms: new Date() - startTime,
         total_cases: totalCases,
         passed_cases: passedCases,
         failed_cases: totalCases - passedCases,
+        errors,
+        screenshots,
         cases,
         // Flat summary for backward-compatible dashboard cards
         total_steps: cases.reduce((s, c) => s + c.total_steps, 0),
@@ -179,6 +237,9 @@ function convertTimeline(timeline, reportsBase) {
         if (step.state_after) {
             step.state_after = toRelativeUrl(step.state_after, reportsBase);
         }
+        if (step.ai_annotated_image) {
+            step.ai_annotated_image = toRelativeUrl(step.ai_annotated_image, reportsBase);
+        }
     });
 }
 
@@ -193,6 +254,18 @@ function saveCombinedReport(report, tcDir) {
     if (reportsBase && webReport.cases) {
         webReport.cases.forEach((c) => {
             convertTimeline(c.timeline, reportsBase);
+            if (c.final_evaluation?.ai_review?.reviewed_image) {
+                c.final_evaluation.ai_review.reviewed_image = toRelativeUrl(c.final_evaluation.ai_review.reviewed_image, reportsBase);
+            }
+            if (c.html_snapshot) {
+                c.html_snapshot = toRelativeUrl(c.html_snapshot, reportsBase);
+            }
+        });
+    }
+
+    if (reportsBase && webReport.screenshots) {
+        webReport.screenshots.forEach((s) => {
+            s.path = toRelativeUrl(s.path, reportsBase);
         });
     }
 

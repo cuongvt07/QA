@@ -4,6 +4,9 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const repo = require('./repository');
+const PQueue = require('p-queue').default;
+const crawler = require('./crawler');
 
 const app = express();
 const PORT = process.env.PORT || 8090;
@@ -11,188 +14,725 @@ const PORT = process.env.PORT || 8090;
 const WEB_DIR = path.resolve(__dirname, '../web');
 const REPORTS_DIR = path.join(WEB_DIR, 'reports');
 
-app.use(cors());
-app.use(express.json());
+// --- Queue Setup ---
+const queue = new PQueue({ concurrency: 5 });
+// Track queue events to broadcast status changes
+queue.on('active', () => {
+    console.log(`[QUEUE] Task started. Size: ${queue.size}  Pending: ${queue.pending}`);
+});
+queue.on('idle', () => {
+    console.log('[QUEUE] Idle.');
+});
+queue.on('next', () => {
+    console.log(`[QUEUE] Task completed. Size: ${queue.size}  Pending: ${queue.pending}`);
+});
 
-// Serve static files from web directory
+// --- SSE Setup ---
+const clients = new Set();
+function broadcastEvent(data) {
+    const payload = `data: ${JSON.stringify(data)}\n\n`;
+    clients.forEach(client => client.write(payload));
+}
+
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+
+// Request Logger
+app.use((req, res, next) => {
+    console.log(`[REQUEST] ${req.method} ${req.url}`);
+    next();
+});
+
 app.use(express.static(WEB_DIR));
 
-// Track active runs
-const activeRuns = new Map();
-
-// API: Get all generated reports
-app.get('/api/reports', (req, res) => {
-    try {
-        if (!fs.existsSync(REPORTS_DIR)) {
-            return res.json([]);
-        }
-
-        const folders = fs.readdirSync(REPORTS_DIR).filter(f => /^(TC_\d+|QA\d+|[A-Z]{3}\d{3})$/i.test(f));
-        const reports = [];
-
-        for (const folder of folders) {
-            const reportPath = path.join(REPORTS_DIR, folder, 'report.json');
-            if (fs.existsSync(reportPath)) {
-                try {
-                    const data = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-                    // Add source info
-                    data.source = 'auto_import';
-                    reports.push(data);
-                } catch (e) {
-                    console.error(`Error parsing ${reportPath}:`, e.message);
-                }
-            }
-        }
-
-        // Sort descending by test_time
-        reports.sort((a, b) => new Date(b.test_time) - new Date(a.test_time));
-        res.json(reports);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
+function ensureDir(dirPath) {
+    if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true });
     }
-});
+}
 
-// API: Trigger engine run
-app.post('/api/run', (req, res) => {
-    const { url, tcCode, optionIndex, useAi } = req.body;
-    
-    if (!url) {
-        return res.status(400).json({ error: 'Missing product URL' });
+function formatMySqlDate(date) {
+    if (!date) return null;
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function nowIso() {
+    return new Date();
+}
+
+function makeId(prefix) {
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sanitizeTcCode(input) {
+    if (!input) return '';
+    return String(input).replace(/[^a-z0-9_-]/gi, '_');
+}
+
+function isValidReportCode(code) {
+    return /^(TC_\d+|QA\d+|[A-Z]{3}\d{3})$/i.test(code || '');
+}
+
+function deleteReportFolderByCode(code) {
+    if (!isValidReportCode(code)) {
+        return { ok: false, status: 400, message: 'Invalid report code format' };
     }
-
-    const runId = 'RUN_' + Date.now();
-    const cliArgs = ['src/cli.js', '--url=' + url];
-    
-    // Add specific index if provided
-    if (typeof optionIndex === 'number') {
-        cliArgs.push(`--option-index=${optionIndex}`);
-    } else {
-        // Just run default flat
-    }
-    
-    if (tcCode) {
-        cliArgs.push(`--tc-code=${tcCode}`);
-    }
-    
-    if (req.body.headless === false) {
-        cliArgs.push('--no-headless');
-    }
-
-    if (useAi === false) {
-        cliArgs.push('--no-ai');
-    }
-
-    console.log(`[SERVER] Spawning Engine for ${runId}: node ${cliArgs.join(' ')}`);
-
-    const child = spawn('node', cliArgs, {
-        cwd: path.resolve(__dirname, '..'), // Run from engine/
-        stdio: 'pipe'
-    });
-
-    activeRuns.set(runId, {
-        status: 'RUNNING',
-        url,
-        startTime: new Date(),
-        output: ''
-    });
-
-    child.stdout.on('data', (data) => {
-        const str = data.toString();
-        process.stdout.write(str); // echo to terminal
-        const run = activeRuns.get(runId);
-        if (run) run.output += str;
-    });
-
-    child.stderr.on('data', (data) => {
-        const str = data.toString();
-        process.stderr.write(str); // echo to terminal
-        const run = activeRuns.get(runId);
-        if (run) run.output += str;
-    });
-
-    child.on('close', (code) => {
-        console.log(`[SERVER] Engine ${runId} exited with code ${code}`);
-        const run = activeRuns.get(runId);
-        if (run) {
-            run.status = code === 0 ? 'COMPLETED' : 'FAILED';
-            run.exitCode = code;
-        }
-    });
-
-    res.json({ message: 'Test queued', runId, status: 'RUNNING' });
-});
-
-// API: Poll run status
-app.get('/api/run-status/:runId', (req, res) => {
-    const run = activeRuns.get(req.params.runId);
-    if (!run) {
-        return res.status(404).json({ error: 'Run not found' });
-    }
-    res.json({
-        runId: req.params.runId,
-        status: run.status,
-        exitCode: run.exitCode,
-    });
-});
-
-// API: Delete a report folder (TC_x or QAx) and all its files
-app.delete('/api/reports/:code', (req, res) => {
-    const code = req.params.code;
-
-    // Validate format to prevent path traversal
-    if (!/^(TC_\d+|QA\d+)$/i.test(code)) {
-        return res.status(400).json({ error: 'Invalid report code format' });
-    }
-
     const reportDir = path.join(REPORTS_DIR, code);
     if (!fs.existsSync(reportDir)) {
-        return res.status(404).json({ error: 'Report not found' });
+        return { ok: false, status: 404, message: 'Report folder not found' };
     }
-
     try {
         fs.rmSync(reportDir, { recursive: true, force: true });
-        console.log(`[SERVER] Deleted report folder: ${reportDir}`);
-        res.json({ message: `Deleted ${code}`, code });
-    } catch (e) {
-        console.error(`[SERVER] Failed to delete ${reportDir}:`, e.message);
-        res.status(500).json({ error: 'Failed to delete report: ' + e.message });
+        return { ok: true, status: 200, message: `Deleted ${code}` };
+    } catch (error) {
+        return { ok: false, status: 500, message: `Failed to delete report: ${error.message}` };
+    }
+}
+
+function extractReportCodeFromOutput(outputText) {
+    if (!outputText) return null;
+    const combinedMatch = outputText.match(/Combined Report:\s*([^\r\n]+report\.json)/i);
+    if (combinedMatch && combinedMatch[1]) {
+        const reportPath = combinedMatch[1].trim();
+        const folder = path.basename(path.dirname(reportPath));
+        if (isValidReportCode(folder)) return folder;
+    }
+    const codeMatch = outputText.match(/\b(TC_\d+|QA\d+|[A-Z]{3}\d{3})\b/);
+    return codeMatch ? codeMatch[1] : null;
+}
+
+function getNextAutoTestName(existingCases) {
+    let maxNum = 0;
+    for (const tc of existingCases) {
+        const m = String(tc.name || '').match(/^MEE(\d{3})$/i);
+        if (m) {
+            maxNum = Math.max(maxNum, parseInt(m[1], 10));
+        }
+    }
+    return `MEE${String(maxNum + 1).padStart(3, '0')}`;
+}
+
+function validateUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    try {
+        new URL(url);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function buildCliArgs(payload) {
+    const args = ['src/cli.js', `--url=${payload.url}`, '--concurrency=1'];
+    if (typeof payload.optionIndex === 'number') args.push(`--option-index=${payload.optionIndex}`);
+    if (payload.tcCode) args.push(`--tc-code=${sanitizeTcCode(payload.tcCode)}`);
+    if (payload.headless === false) args.push('--no-headless');
+    if (payload.useAi === false) args.push('--no-ai');
+    if (payload.customImageFilename) args.push(`--custom-image=${payload.customImageFilename}`);
+    return args;
+}
+
+const activeRuns = new Map();
+
+async function startEngineRun(payload) {
+    if (!validateUrl(payload.url)) {
+        return { error: 'Missing or invalid product URL', status: 400 };
+    }
+
+    const runId = makeId('RUN');
+    const cliArgs = buildCliArgs(payload);
+    const startedAt = nowIso();
+
+    const runRecord = {
+        id: runId,
+        test_case_id: payload.testCaseId || null,
+        batch_id: payload.batchId || null,
+        name: payload.testName || payload.tcCode || 'Untitled',
+        url: payload.url,
+        tc_code: payload.tcCode || null,
+        report_code: payload.tcCode || null,
+        status: 'QUEUED', // Start in QUEUED state
+        created_at: startedAt,
+        started_at: null, // Not started yet
+        updated_at: startedAt,
+        source: payload.source || 'api',
+    };
+
+    await repo.createRun(runRecord);
+
+    if (payload.testCaseId) {
+        await repo.updateTestCase(payload.testCaseId, {
+            status: 'QUEUED',
+            updated_at: formatMySqlDate(startedAt)
+        });
+    }
+
+    // Add to activeRuns with QUEUED status initially
+    activeRuns.set(runId, {
+        status: 'QUEUED',
+        output: '',
+        exitCode: null,
+        startedAt: null,
+    });
+
+    // Notify clients that a test has been queued
+    broadcastEvent({ 
+        event: 'test-queued', 
+        runId, 
+        testCaseId: payload.testCaseId, 
+        testName: payload.testName 
+    });
+
+    // Add to queue
+    queue.add(async () => {
+        const active = activeRuns.get(runId);
+        if (!active) return; // Should not happen
+
+        active.status = 'RUNNING';
+        active.startedAt = nowIso();
+        
+        await repo.updateRun(runId, {
+            status: 'RUNNING',
+            started_at: active.startedAt,
+            updated_at: active.startedAt
+        });
+
+        if (payload.testCaseId) {
+            await repo.updateTestCase(payload.testCaseId, {
+                status: 'RUNNING',
+                updated_at: formatMySqlDate(active.startedAt)
+            });
+        }
+
+        // Notify clients that a test has actually started running
+        broadcastEvent({ 
+            event: 'test-started', 
+            runId, 
+            testCaseId: payload.testCaseId, 
+            testName: payload.testName 
+        });
+
+        return new Promise((resolve) => {
+            const child = spawn('node', cliArgs, {
+                cwd: path.resolve(__dirname, '..'),
+                stdio: 'pipe',
+            });
+
+            active.child = child;
+
+            console.log(`[SERVER] Started run ${runId}: node ${cliArgs.join(' ')}`);
+
+            child.stdout.on('data', (data) => {
+                const text = data.toString();
+                process.stdout.write(text);
+                active.output += text;
+            });
+
+            child.stderr.on('data', (data) => {
+                const text = data.toString();
+                process.stderr.write(text);
+                active.output += text;
+            });
+
+            child.on('close', async (code) => {
+                const finalOutput = active.output;
+                const finalStatus = code === 0 ? 'COMPLETED' : 'FAILED';
+                const finalReportCode = payload.tcCode || extractReportCodeFromOutput(finalOutput);
+                const finishedAt = nowIso();
+                
+                await repo.updateRun(runId, {
+                    status: finalStatus,
+                    exit_code: code,
+                    finished_at: finishedAt,
+                    updated_at: finishedAt,
+                    output: finalOutput,
+                    report_code: finalReportCode,
+                    tc_code: payload.tcCode || finalReportCode
+                });
+
+                if (finalReportCode) {
+                    const reportPath = path.join(REPORTS_DIR, finalReportCode, 'report.json');
+                    if (fs.existsSync(reportPath)) {
+                        try {
+                            const reportData = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                            await repo.saveReport(runId, reportData);
+                        } catch (e) {
+                            console.error(`[SERVER] Error saving report to DB for ${runId}:`, e.message);
+                        }
+                    }
+                }
+
+                if (payload.testCaseId) {
+                    await repo.updateTestCase(payload.testCaseId, {
+                        status: finalStatus === 'COMPLETED' ? 'PASS' : 'FAIL',
+                        updated_at: formatMySqlDate(finishedAt)
+                    });
+                }
+
+                activeRuns.delete(runId);
+                console.log(`[SERVER] Run ${runId} finished with code ${code}`);
+
+                broadcastEvent({ 
+                    event: 'test-finished', 
+                    runId, 
+                    status: finalStatus, 
+                    testCaseId: payload.testCaseId,
+                    reportCode: finalReportCode
+                });
+
+                resolve(); // Resolve the queue job
+            });
+        });
+    });
+
+    return { runId, runRecord, status: 'QUEUED' };
+}
+
+// API: Upload custom image
+app.post('/api/upload-image', (req, res) => {
+    try {
+        const { imageBase64 } = req.body;
+        if (!imageBase64) return res.status(400).json({ error: 'No image data' });
+        const imagesDir = path.resolve(__dirname, '../images');
+        ensureDir(imagesDir);
+        const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+        const targetFilename = `custom_upload_default.png`;
+        fs.writeFileSync(path.join(imagesDir, targetFilename), base64Data, 'base64');
+        res.json({ message: 'Success', filename: targetFilename });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
-// API: Delete ALL report folders (reset entire system)
-app.delete('/api/reports-all', (req, res) => {
+// API: Test cases
+app.get('/api/test-cases', async (req, res) => {
     try {
-        if (!fs.existsSync(REPORTS_DIR)) {
-            return res.json({ message: 'No reports directory found', deleted: 0 });
+        const list = await repo.getAllTestCases();
+        res.json(list);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/test-cases', async (req, res) => {
+    try {
+        const { name, url } = req.body || {};
+        if (!validateUrl(url)) return res.status(400).json({ error: 'Invalid URL' });
+
+        const existing = await repo.getAllTestCases();
+        const normalizedName = String(name || '').trim() || getNextAutoTestName(existing);
+        
+        if (existing.some(tc => String(tc.name).toLowerCase() === normalizedName.toLowerCase())) {
+            return res.status(409).json({ error: 'Name exists' });
         }
 
-        const folders = fs.readdirSync(REPORTS_DIR).filter(f => {
-            const fullPath = path.join(REPORTS_DIR, f);
-            return fs.statSync(fullPath).isDirectory();
+        const testCase = {
+            id: makeId('TC'),
+            name: normalizedName,
+            url,
+            status: 'PENDING',
+            created_at: formatMySqlDate(new Date()),
+            updated_at: formatMySqlDate(new Date())
+        };
+
+        await repo.createTestCase(testCase);
+        res.status(201).json(testCase);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/test-cases/:id', async (req, res) => {
+    try {
+        const tc = await repo.getTestCaseById(req.params.id);
+        if (!tc) return res.status(404).json({ error: 'Not found' });
+        const runs = await repo.getAllRuns(tc.id);
+        res.json({ test_case: tc, runs });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/test-cases/:id/run', async (req, res) => {
+    try {
+        const tc = await repo.getTestCaseById(req.params.id);
+        if (!tc) return res.status(404).json({ error: 'Not found' });
+
+        const started = await startEngineRun({
+            url: tc.url,
+            tcCode: sanitizeTcCode(req.body?.tcCode || tc.name),
+            optionIndex: req.body?.optionIndex,
+            useAi: req.body?.useAi,
+            headless: req.body?.headless,
+            customImageFilename: req.body?.customImageFilename,
+            testCaseId: tc.id,
+            testName: tc.name,
+            batchId: req.body?.batchId,
+            source: 'test-case-api',
         });
 
-        let deleted = 0;
-        for (const folder of folders) {
-            const folderPath = path.join(REPORTS_DIR, folder);
+        if (started.error) return res.status(started.status || 400).json({ error: started.error });
+        res.json({ message: 'Queued', runId: started.runId, status: 'RUNNING', test_case_id: tc.id });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/test-cases/:id', async (req, res) => {
+    try {
+        const tc = await repo.getTestCaseById(req.params.id);
+        if (!tc) return res.status(404).json({ error: 'Not found' });
+
+        const relatedRuns = await repo.getAllRuns(tc.id);
+        if (relatedRuns.some(r => activeRuns.has(r.id))) {
+            return res.status(409).json({ error: 'Active run exists' });
+        }
+
+        for (const r of relatedRuns) {
+            const code = r.report_code || r.tc_code;
+            if (code) deleteReportFolderByCode(code);
+        }
+
+        await repo.deleteTestCase(tc.id);
+        res.json({ message: `Deleted ${tc.name}` });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// API: Runs
+app.get('/api/runs', async (req, res) => {
+    try {
+        const runs = await repo.getAllRuns(req.query.test_case_id);
+        const mapped = runs.map(r => {
+            const active = activeRuns.get(r.id);
+            if (!active) return r;
+            return { ...r, status: 'RUNNING', output: active.output };
+        });
+        res.json(mapped);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/runs/:runId', async (req, res) => {
+    try {
+        const run = await repo.getRunById(req.params.runId);
+        if (!run) return res.status(404).json({ error: 'Not found' });
+
+        const active = activeRuns.get(run.id);
+        const displayRun = active ? { ...run, status: 'RUNNING', output: active.output } : run;
+        
+        const report = await repo.getReportByRunId(run.id);
+        res.json({ ...displayRun, report: report ? report.content : null });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/runs/:runId', async (req, res) => {
+    try {
+        if (activeRuns.has(req.params.runId)) return res.status(409).json({ error: 'Active' });
+        const run = await repo.getRunById(req.params.runId);
+        if (!run) return res.status(404).json({ error: 'Not found' });
+
+        const code = run.report_code || run.tc_code;
+        if (code) deleteReportFolderByCode(code);
+        
+        await repo.deleteRun(run.id);
+        res.json({ message: 'Deleted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// API: Reports
+app.get('/api/reports', async (req, res) => {
+    try {
+        const reports = await repo.getAllReports();
+        res.json(reports);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// --- Product Crawler API ---
+app.get('/api/products', async (req, res) => {
+    try {
+        const list = await repo.getAllProducts();
+        res.json(list);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/products/crawl', async (req, res) => {
+    try {
+        const { ids, platform } = req.body;
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ error: 'Missing or invalid product IDs' });
+        }
+
+        // Run crawler in background but respond immediately or handle progress via SSE
+        // For simplicity and matching user request for "sequential", we run it here 
+        // and broadcast progress.
+        
+        // We shouldn't block the request if it's long, so we'll run it in background
+        // and tell the client it started. The client will listen to SSE.
+        
+        const crawlId = makeId('CRAWL');
+        
+        // Background execution
+        (async () => {
             try {
-                fs.rmSync(folderPath, { recursive: true, force: true });
-                deleted++;
-            } catch (e) {
-                console.error(`[SERVER] Failed to delete ${folderPath}:`, e.message);
+                await crawler.runCrawler(ids, platform || 'printerval.com', (progress) => {
+                    broadcastEvent({
+                        event: 'crawler-progress',
+                        crawlId,
+                        ...progress
+                    });
+                });
+                
+                broadcastEvent({
+                    event: 'crawler-finished',
+                    crawlId,
+                    total: ids.length
+                });
+            } catch (err) {
+                console.error('[CRAWLER] Error:', err);
+                broadcastEvent({
+                    event: 'crawler-error',
+                    crawlId,
+                    error: err.message
+                });
+            }
+        })();
+
+        res.json({ message: 'Crawler started', crawlId });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/products/convert-to-test-cases', async (req, res) => {
+    try {
+        const { keys } = req.body; // Array of "product_id|platform" strings
+        if (!keys || !Array.isArray(keys) || keys.length === 0) {
+            return res.status(400).json({ error: 'No product keys provided' });
+        }
+
+        const allProducts = await repo.getAllProducts();
+        const targetProducts = allProducts.filter(p => keys.includes(`${p.product_id}|${p.platform}`));
+
+        if (targetProducts.length === 0) {
+            return res.status(404).json({ error: 'No matching products found' });
+        }
+
+        const createdTestCases = [];
+        const existingTC = await repo.getAllTestCases();
+
+        for (const p of targetProducts) {
+            const url = p.final_url || p.redirect_url;
+            const platformName = p.platform.split('.')[0].toUpperCase();
+            const tcName = `${platformName} ${p.product_id}`;
+
+            // Check if name already exists
+            if (existingTC.some(tc => String(tc.name).toLowerCase() === tcName.toLowerCase())) {
+                continue;
+            }
+
+            const testCase = {
+                id: makeId('TC'),
+                name: tcName,
+                url,
+                status: 'PENDING',
+                created_at: formatMySqlDate(new Date()),
+                updated_at: formatMySqlDate(new Date())
+            };
+
+            await repo.createTestCase(testCase);
+            createdTestCases.push(testCase);
+            existingTC.push(testCase); // Update local list to prevent duplicates in this loop
+        }
+
+        res.json({
+            message: `Successfully created ${createdTestCases.length} test cases`,
+            count: createdTestCases.length
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/products/batch-delete', async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!ids || !Array.isArray(ids)) return res.status(400).json({ error: 'Invalid IDs' });
+        
+        for (const pid_platform of ids) {
+            // pid_platform is "product_id|platform"
+            const [product_id, platform] = pid_platform.split('|');
+            if (product_id && platform) {
+                await repo.deleteProduct(product_id, platform);
+            }
+        }
+        res.json({ message: `Deleted ${ids.length} products` });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// API: Settings Management (.env persistence)
+const SETTINGS_FILE = path.resolve(__dirname, '../.env');
+
+app.get('/api/settings', (req, res) => {
+    try {
+        if (!fs.existsSync(SETTINGS_FILE)) return res.json({});
+        const content = fs.readFileSync(SETTINGS_FILE, 'utf8');
+        const settings = {};
+        content.split('\n').forEach(line => {
+            const match = line.match(/^([^#\s][^=]+)=(.*)$/);
+            if (match) {
+                const key = match[1].trim();
+                const value = match[2].trim();
+                // Clean up quotes if present
+                settings[key] = value.replace(/^['"](.*)['"]$/, '$1');
+            }
+        });
+        res.json(settings);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/settings', (req, res) => {
+    try {
+        console.log('[SETTINGS] POST request body:', req.body);
+        const newSettings = req.body;
+        if (!newSettings || typeof newSettings !== 'object') {
+            console.error('[SETTINGS] Invalid body received');
+            return res.status(400).json({ error: 'Invalid settings object' });
+        }
+
+        let content = fs.existsSync(SETTINGS_FILE) ? fs.readFileSync(SETTINGS_FILE, 'utf8') : '';
+        const lines = content.split('\n');
+        
+        for (const [key, value] of Object.entries(newSettings)) {
+            let found = false;
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].trim().startsWith(`${key}=`)) {
+                    lines[i] = `${key}=${value}`;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                lines.push(`${key}=${value}`);
             }
         }
 
-        console.log(`[SERVER] Reset: Deleted ${deleted} report folders.`);
-        res.json({ message: `Deleted ${deleted} report(s)`, deleted });
-    } catch (e) {
-        res.status(500).json({ error: 'Failed to reset reports: ' + e.message });
+        console.log('[SETTINGS] Writing updated .env content...');
+        fs.writeFileSync(SETTINGS_FILE, lines.join('\n'), 'utf8');
+        // Reload process.env for current process
+        for (const [key, value] of Object.entries(newSettings)) {
+            process.env[key] = value;
+        }
+
+        console.log('[SETTINGS] Successfully saved.');
+        res.json({ message: 'Settings saved successfully' });
+    } catch (error) {
+        console.error('[SETTINGS] Error saving settings:', error.message);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Start Server
+app.post('/api/run', async (req, res) => {
+    try {
+        const started = await startEngineRun({
+            url: req.body?.url,
+            tcCode: sanitizeTcCode(req.body?.tcCode),
+            optionIndex: req.body?.optionIndex,
+            useAi: req.body?.useAi,
+            headless: req.body?.headless,
+            customImageFilename: req.body?.customImageFilename,
+            batchId: req.body?.batchId,
+            source: 'legacy-run-api',
+        });
+        if (started.error) return res.status(400).json({ error: started.error });
+        res.json({ message: 'Queued', runId: started.runId, status: 'RUNNING' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/run-status/:runId', (req, res) => {
+    const active = activeRuns.get(req.params.runId);
+    if (active) {
+        return res.json({ runId: req.params.runId, status: 'RUNNING' });
+    }
+    repo.getRunById(req.params.runId).then(run => {
+        if (!run) return res.status(404).json({ error: 'Not found' });
+        res.json({ runId: run.id, status: run.status, exitCode: run.exit_code });
+    }).catch(err => res.status(500).json({ error: err.message }));
+});
+
+// SSE Endpoint
+app.get('/api/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    clients.add(res);
+    console.log(`[SERVER] SSE Client connected. Total: ${clients.size}`);
+
+    req.on('close', () => {
+        clients.delete(res);
+        console.log(`[SERVER] SSE Client disconnected. Total: ${clients.size}`);
+    });
+});
+
+// Reset
+app.all(['/api/reset-all', '/api/reports-all'], async (req, res) => {
+    try {
+        await repo.resetAll();
+        if (fs.existsSync(REPORTS_DIR)) {
+            const folders = fs.readdirSync(REPORTS_DIR, { withFileTypes: true });
+            for (const f of folders) {
+                if (f.isDirectory()) fs.rmSync(path.join(REPORTS_DIR, f.name), { recursive: true, force: true });
+            }
+        }
+        res.json({ message: 'Reset successful' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+ensureDir(REPORTS_DIR);
+// Maintenance: Cleanup old data
+app.delete('/api/maintenance/cleanup', async (req, res) => {
+    const days = parseInt(req.query.days) || 30;
+    try {
+        const result = await repo.deleteOldRuns(days);
+        res.json({ message: `Cleaned up data older than ${days} days`, result });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Run daily cleanup at 3 AM or every 24h
+setInterval(async () => {
+    console.log('[MAINTENANCE] Running scheduled cleanup...');
+    try {
+        await repo.deleteOldRuns(30);
+        console.log('[MAINTENANCE] Cleanup finished.');
+    } catch (err) {
+        console.error('[MAINTENANCE] Cleanup failed:', err.message);
+    }
+}, 24 * 60 * 60 * 1000);
+
 app.listen(PORT, () => {
-    console.log(`\n======================================================`);
-    console.log(`🚀 QA Dashboard & API Server running on port ${PORT}`);
-    console.log(`👉 Open http://localhost:${PORT} in your browser`);
-    console.log(`======================================================\n`);
+    console.log(`\nQA Server (MySQL) running on http://localhost:${PORT}\n`);
 });

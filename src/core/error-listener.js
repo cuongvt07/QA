@@ -48,9 +48,13 @@ class ErrorListener {
                 timestamp: new Date().toISOString(),
             });
 
+            // Only mark as fatal if it's a critical API request, NOT a static asset (font, css, img)
             if (url.includes('customily')) {
-                this.fatalApiError = true;
-                this.fatalApiDetails.push(`Request failed: ${url} (${failureReason})`);
+                const isStaticAsset = /\.(png|jpg|jpeg|gif|webp|svg|woff|woff2|ttf|otf|css|js)(\?.*)?$/i.test(url);
+                if (!isStaticAsset) {
+                    this.fatalApiError = true;
+                    this.fatalApiDetails.push(`Request failed: ${url} (${failureReason})`);
+                }
             }
         });
 
@@ -70,8 +74,11 @@ class ErrorListener {
                 }
 
                 if (url.includes('customily')) {
-                    this.fatalApiError = true;
-                    this.fatalApiDetails.push(`API Error ${status}: ${url}`);
+                    const isStaticAsset = /\.(png|jpg|jpeg|gif|webp|svg|woff|woff2|ttf|otf|css|js)(\?.*)?$/i.test(url);
+                    if (!isStaticAsset) {
+                        this.fatalApiError = true;
+                        this.fatalApiDetails.push(`API Error ${status}: ${url}`);
+                    }
                 }
             }
         });

@@ -80,13 +80,27 @@ async function calculateVisualDiff(beforePath, afterPath) {
     try {
         const { PNG } = require('pngjs');
         const pixelmatch = require('pixelmatch');
+        const fsPromises = require('fs').promises;
 
         if (!fs.existsSync(beforePath) || !fs.existsSync(afterPath)) {
             return { diffPercent: -1, error: 'Screenshot file not found' };
         }
 
-        const img1 = PNG.sync.read(fs.readFileSync(beforePath));
-        const img2 = PNG.sync.read(fs.readFileSync(afterPath));
+        // Read files asynchronously
+        const [beforeBuf, afterBuf] = await Promise.all([
+            fsPromises.readFile(beforePath),
+            fsPromises.readFile(afterPath)
+        ]);
+
+        // Parse PNGs asynchronously
+        const parsePng = (buffer) => new Promise((resolve, reject) => {
+            new PNG().parse(buffer, (err, data) => err ? reject(err) : resolve(data));
+        });
+
+        const [img1, img2] = await Promise.all([
+            parsePng(beforeBuf),
+            parsePng(afterBuf)
+        ]);
 
         const width = Math.min(img1.width, img2.width);
         const height = Math.min(img1.height, img2.height);
@@ -147,7 +161,46 @@ async function verifyCart(page) {
         }
     } catch (e) { /* continue */ }
 
-    // 2. Check for cart popup/drawer with "It\'s in the cart!" or similar
+    // 2. Check right mini-cart drawer structure (Meear style)
+    try {
+        const drawer = await page.$('[from="right"].mini-cart-drawer, .mini-cart-drawer');
+        if (drawer && await drawer.isVisible()) {
+            const drawerText = ((await drawer.textContent()) || '').replace(/\s+/g, ' ').trim();
+            const hasInCartTitle = /it'?s in the cart|in the cart/i.test(drawerText);
+            const hasItem = await drawer.$('.item-summary-product, .item-summary, .list-add-item');
+            const hasViewCartBtn = await drawer.$('a.checkout-button[href*="/cart"], a:has-text("View cart"), a:has-text("View Cart")');
+
+            if ((hasInCartTitle && hasItem) || hasViewCartBtn || hasItem) {
+                return { success: true, method: 'mini_cart_drawer', message: 'Mini-cart drawer detected with added item summary.' };
+            }
+        }
+    } catch (e) { /* continue */ }
+
+    // 3. Check for the right-side cart summary popup structure
+    const itemSummarySelectors = [
+        '.item-summary .item-summary-product',
+        '.item-summary-product',
+        '.list-add-item',
+        '.item-summary',
+    ];
+
+    for (const selector of itemSummarySelectors) {
+        try {
+            const el = await page.$(selector);
+            if (el && await el.isVisible()) {
+                const text = ((await el.textContent()) || '').replace(/\s+/g, ' ').trim();
+                const hasCartSignal =
+                    /cart|view cart|buy more|price|\$|it'?s in the cart/i.test(text) ||
+                    text.length >= 20;
+
+                if (hasCartSignal) {
+                    return { success: true, method: 'item_summary_popup', message: `Cart item summary detected: ${selector}` };
+                }
+            }
+        } catch (e) { /* continue */ }
+    }
+
+    // 4. Check for cart popup/drawer with "It's in the cart!" or similar
     const cartPopupSelectors = [
         '[class*="cart-popup"]',
         '[class*="cart-drawer"]',
@@ -162,7 +215,7 @@ async function verifyCart(page) {
         try {
             const el = await page.$(selector);
             if (el && await el.isVisible()) {
-                const text = await el.textContent();
+                const text = (await el.textContent()) || '';
                 if (text.includes('cart') || text.includes('Cart') || text.includes('Added')) {
                     return { success: true, method: 'cart_popup', message: `Cart popup detected: ${selector}` };
                 }
@@ -170,7 +223,7 @@ async function verifyCart(page) {
         } catch (e) { /* continue */ }
     }
 
-    // 3. Check for "View Cart" link/button visible on page
+    // 5. Check for "View Cart" link/button visible on page
     try {
         const viewCartBtn = await page.$('a:has-text("View Cart"), button:has-text("View Cart"), a:has-text("View cart")');
         if (viewCartBtn && await viewCartBtn.isVisible()) {
@@ -178,13 +231,13 @@ async function verifyCart(page) {
         }
     } catch (e) { /* continue */ }
 
-    // 4. Check URL redirect to /cart or /checkout
+    // 6. Check URL redirect to /cart or /checkout
     const url = page.url();
     if (url.includes('/cart') || url.includes('/checkout')) {
         return { success: true, method: 'redirect', message: `Redirected to: ${url}` };
     }
 
-    // 5. Check cart badge count
+    // 7. Check cart badge count
     const cartBadgeSelectors = [
         '.cart-count',
         '.cart-item-count',
@@ -205,7 +258,7 @@ async function verifyCart(page) {
         }
     }
 
-    // 6. Check for generic success notification
+    // 8. Check for generic success notification
     const successSelectors = [
         '.alert-success',
         '.notification-success',
@@ -222,8 +275,96 @@ async function verifyCart(page) {
     return { success: false, method: null, message: 'ADD_TO_CART_FAIL: Could not verify cart update.' };
 }
 
+/**
+ * Capture visual evidence right after Add to Cart.
+ * Prioritize right-side popup/item summary area; fallback to viewport screenshot.
+ */
+async function captureCartEvidence(page, outputDir, filenamePrefix = 'add_to_cart') {
+    try {
+        if (!outputDir) {
+            return { captured: false, viewportPath: '', elementPath: '', selector: null, message: 'No output directory provided.' };
+        }
+
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        const popupSelectors = [
+            '[from="right"].mini-cart-drawer',
+            '.mini-cart-drawer',
+            '.mini-cart-padding',
+            '.mini-cart-top',
+            '.mini-cart-action',
+            '.item-summary',
+            '.item-box.list-add-item',
+            '.item-summary-product',
+            '[class*="cart-popup"]',
+            '[class*="cart-drawer"]',
+            '[class*="cart-notification"]',
+            '[class*="side-cart"]',
+            '[class*="mini-cart"]',
+            '.added-to-cart-content',
+        ];
+
+        const elementPath = path.join(outputDir, `${filenamePrefix}_element.png`);
+        const viewportPath = path.join(outputDir, `${filenamePrefix}_viewport.png`);
+
+        // Always capture viewport first as primary context
+        await page.screenshot({ path: viewportPath, fullPage: false });
+
+        let capturedElement = false;
+        let finalSelector = null;
+
+        for (const selector of popupSelectors) {
+            try {
+                const el = await page.$(selector);
+                if (el && await el.isVisible()) {
+                    const box = await el.boundingBox().catch(() => null);
+                    if (box && box.width >= 50 && box.height >= 50) {
+                        // Use page.screenshot with clip to capture the element PLUS its background
+                        // This prevents "transparent" PNGs when the element has no solid background
+                        await page.screenshot({ 
+                            path: elementPath,
+                            clip: {
+                                x: Math.max(0, box.x),
+                                y: Math.max(0, box.y),
+                                width: box.width,
+                                height: box.height
+                            }
+                        });
+                        capturedElement = true;
+                        finalSelector = selector;
+                        break;
+                    }
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+
+        return {
+            captured: true,
+            viewportPath,
+            elementPath: capturedElement ? elementPath : '',
+            selector: finalSelector,
+            message: capturedElement 
+                ? `Captured viewport and element (${finalSelector})` 
+                : 'Captured viewport (no specific element found)'
+        };
+    } catch (error) {
+        return {
+            captured: false,
+            viewportPath: '',
+            elementPath: '',
+            selector: null,
+            message: `Failed to capture cart evidence: ${error.message}`,
+        };
+    }
+}
+
 module.exports = {
     validatePreviewImage,
     calculateVisualDiff,
     verifyCart,
+    captureCartEvidence,
 };

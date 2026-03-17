@@ -10,8 +10,8 @@ const PET_NAMES = ['Buddy', 'Max', 'Kitty', 'Luna', 'Coco', 'Milo', 'Bella', 'Da
 const YEARS = Array.from({ length: 11 }, (_, i) => String(2015 + i));
 
 const SAMPLE_IMAGES = [
-    path.resolve(__dirname, '../../assets/test-cat.png'),
-    path.resolve(__dirname, '../../assets/test-dog.png'),
+    path.resolve(__dirname, 'images/test-cat.png'),
+    path.resolve(__dirname, 'images/test-dog.png'),
 ];
 
 function pickRandom(arr) {
