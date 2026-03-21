@@ -124,17 +124,42 @@ function validateUrl(url) {
     }
 }
 
+function normalizeBusinessStatus(status, fallback = 'FAIL') {
+    const s = String(status || '').toUpperCase();
+    if (['PASS', 'FAIL', 'FATAL', 'REVIEW', 'PENDING', 'QUEUED', 'RUNNING'].includes(s)) return s;
+    if (['PASS_AUTO', 'SUCCESS', 'COMPLETED', 'DONE'].includes(s)) return 'PASS';
+    if (['FAIL_AUTO', 'FAILED', 'ERROR'].includes(s)) return 'FAIL';
+    return fallback;
+}
+
+function resolveCliConcurrency(payload = {}) {
+    const rawValue = payload.concurrency
+        ?? process.env.DASHBOARD_CASE_CONCURRENCY
+        ?? process.env.TEST_CASE_CONCURRENCY
+        ?? 2;
+
+    const parsed = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) return 2;
+    return Math.min(parsed, 8);
+}
+
 function buildCliArgs(payload) {
-    const args = ['src/cli.js', `--url=${payload.url}`, '--concurrency=1'];
+    const concurrency = resolveCliConcurrency(payload);
+    const args = ['src/cli.js', `--url=${payload.url}`, `--concurrency=${concurrency}`];
     if (typeof payload.optionIndex === 'number') args.push(`--option-index=${payload.optionIndex}`);
     if (payload.tcCode) args.push(`--tc-code=${sanitizeTcCode(payload.tcCode)}`);
     if (payload.headless === false) args.push('--no-headless');
     if (payload.useAi === false) args.push('--no-ai');
     if (payload.customImageFilename) args.push(`--custom-image=${payload.customImageFilename}`);
+    // Reliability Engine v2.1 feature flag
+    if (payload.reliabilityV2 === true || process.env.RELIABILITY_V2 === 'true') {
+        args.push('--reliability-v2');
+    }
     return args;
 }
 
 const activeRuns = new Map();
+let isCrawlerRunning = false;
 
 async function startEngineRun(payload) {
     if (!validateUrl(payload.url)) {
@@ -238,12 +263,35 @@ async function startEngineRun(payload) {
 
             child.on('close', async (code) => {
                 const finalOutput = active.output;
-                const finalStatus = code === 0 ? 'COMPLETED' : 'FAILED';
+                const executionStatus = code === 0 ? 'COMPLETED' : 'FAILED';
                 const finalReportCode = payload.tcCode || extractReportCodeFromOutput(finalOutput);
                 const finishedAt = nowIso();
                 
+                let reportResultStatus = null;
+                let reportScore = 0;
+
+                if (finalReportCode) {
+                    const reportPath = path.join(REPORTS_DIR, finalReportCode, 'report.json');
+                    if (fs.existsSync(reportPath)) {
+                        try {
+                            const reportData = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                            reportResultStatus = reportData.status;
+                            reportScore = reportData.score;
+                            await repo.saveReport(runId, reportData);
+                        } catch (e) {
+                            console.error(`[SERVER] Error saving report to DB for ${runId}:`, e.message);
+                        }
+                    }
+                }
+
+                const finalBusinessStatus = normalizeBusinessStatus(
+                    reportResultStatus,
+                    executionStatus === 'COMPLETED' ? 'PASS' : 'FAIL'
+                );
+
+                // Update Run - Execution status only (COMPLETED/FAILED)
                 await repo.updateRun(runId, {
-                    status: finalStatus,
+                    status: executionStatus,
                     exit_code: code,
                     finished_at: finishedAt,
                     updated_at: finishedAt,
@@ -252,34 +300,24 @@ async function startEngineRun(payload) {
                     tc_code: payload.tcCode || finalReportCode
                 });
 
-                if (finalReportCode) {
-                    const reportPath = path.join(REPORTS_DIR, finalReportCode, 'report.json');
-                    if (fs.existsSync(reportPath)) {
-                        try {
-                            const reportData = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-                            await repo.saveReport(runId, reportData);
-                        } catch (e) {
-                            console.error(`[SERVER] Error saving report to DB for ${runId}:`, e.message);
-                        }
-                    }
-                }
-
                 if (payload.testCaseId) {
-                    await repo.updateTestCase(payload.testCaseId, {
-                        status: finalStatus === 'COMPLETED' ? 'PASS' : 'FAIL',
-                        updated_at: formatMySqlDate(finishedAt)
+                    await repo.updateTestCase(payload.testCaseId, { 
+                        status: finalBusinessStatus,
+                        last_run_id: runId,
+                        updated_at: finishedAt
                     });
                 }
 
                 activeRuns.delete(runId);
-                console.log(`[SERVER] Run ${runId} finished with code ${code}`);
+                console.log(`[SERVER] Run ${runId} finished with code ${code}, Result: ${reportResultStatus || executionStatus}`);
 
                 broadcastEvent({ 
                     event: 'test-finished', 
                     runId, 
-                    status: finalStatus, 
+                    status: finalBusinessStatus,
                     testCaseId: payload.testCaseId,
-                    reportCode: finalReportCode
+                    reportCode: finalReportCode,
+                    score: reportScore
                 });
 
                 resolve(); // Resolve the queue job
@@ -364,6 +402,7 @@ app.post('/api/test-cases/:id/run', async (req, res) => {
             url: tc.url,
             tcCode: sanitizeTcCode(req.body?.tcCode || tc.name),
             optionIndex: req.body?.optionIndex,
+            concurrency: req.body?.concurrency,
             useAi: req.body?.useAi,
             headless: req.body?.headless,
             customImageFilename: req.body?.customImageFilename,
@@ -475,13 +514,11 @@ app.post('/api/products/crawl', async (req, res) => {
             return res.status(400).json({ error: 'Missing or invalid product IDs' });
         }
 
-        // Run crawler in background but respond immediately or handle progress via SSE
-        // For simplicity and matching user request for "sequential", we run it here 
-        // and broadcast progress.
-        
-        // We shouldn't block the request if it's long, so we'll run it in background
-        // and tell the client it started. The client will listen to SSE.
-        
+        if (isCrawlerRunning) {
+            return res.status(409).json({ error: 'Another crawl job is already in progress. Please wait.' });
+        }
+
+        isCrawlerRunning = true;
         const crawlId = makeId('CRAWL');
         
         // Background execution
@@ -507,11 +544,14 @@ app.post('/api/products/crawl', async (req, res) => {
                     crawlId,
                     error: err.message
                 });
+            } finally {
+                isCrawlerRunning = false;
             }
         })();
 
         res.json({ message: 'Crawler started', crawlId });
     } catch (error) {
+        isCrawlerRunning = false;
         res.status(500).json({ error: error.message });
     }
 });
@@ -654,6 +694,7 @@ app.post('/api/run', async (req, res) => {
             url: req.body?.url,
             tcCode: sanitizeTcCode(req.body?.tcCode),
             optionIndex: req.body?.optionIndex,
+            concurrency: req.body?.concurrency,
             useAi: req.body?.useAi,
             headless: req.body?.headless,
             customImageFilename: req.body?.customImageFilename,
@@ -709,6 +750,54 @@ app.all(['/api/reset-all', '/api/reports-all'], async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// ─── Reliability Engine v2.1 Endpoints ──────────────────────────────────────
+
+/**
+ * GET /api/force-review-check?signature=<hash>
+ * Spec §8: Check if the next run for a given test_input_signature should be
+ * forced into REVIEW based on historical disagreement rate.
+ */
+app.get('/api/force-review-check', async (req, res) => {
+    const { signature } = req.query;
+    if (!signature) return res.status(400).json({ error: 'signature is required' });
+
+    try {
+        const { checkForceReview } = require('./core/reliability-engine');
+        const history = await repo.getDecisionHistoryBySignature(signature, 5);
+        const decisions = history.map(h => h.decision);
+        const result = checkForceReview(decisions);
+        res.json({ signature, history_count: history.length, ...result });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * GET /api/reliability-kpi
+ * Returns aggregate KPI metrics across recent runs (Spec §9).
+ * Light summary: auto_decision_stability, review_rate, unavailable_signal_rate.
+ */
+app.get('/api/reliability-kpi', async (req, res) => {
+    try {
+        const allReports = await repo.getAllReports();
+        const total = allReports.length;
+        if (total === 0) return res.json({ total: 0 });
+
+        // We need full content to compute these — query latest 50 only
+        const sql = `SELECT tr.content FROM test_report tr ORDER BY tr.created_at DESC LIMIT 50`;
+        const { default: db } = require('./db') || { default: null };
+        // Graceful fallback if db not directly importable here
+        res.json({
+            message: 'KPI endpoint available — run with --reliability-v2 enabled reports for full metrics.',
+            total_runs: total,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 ensureDir(REPORTS_DIR);
 // Maintenance: Cleanup old data

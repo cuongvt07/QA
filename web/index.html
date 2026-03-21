@@ -92,7 +92,7 @@
                 <label class="toggle-switch"
                     style="margin-right: 16px; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.85rem;"
                     title="Dùng AI (Gemini) để check lỗi nghiêm trọng ở ảnh Preview cuối cùng">
-                    <input type="checkbox" id="checkbox-use-ai" style="accent-color: var(--accent-primary);">
+                    <input type="checkbox" id="checkbox-use-ai" checked style="accent-color: var(--accent-primary);">
                     Use AI for Final Image Review
                 </label>
                 <button class="btn-ghost" id="btn-sync-data" style="margin-right: 8px;" title="Sync data from server">
@@ -109,7 +109,15 @@
                         <polyline points="17 8 12 3 7 8" />
                         <line x1="12" y1="3" x2="12" y2="15" />
                     </svg>
-                    Import Report
+                    Import
+                </button>
+                <button class="btn-ghost" id="btn-export-csv" style="margin-right: 8px;" title="Export selected test cases to Excel (.xlsx)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    Export Excel
                 </button>
                 <input type="file" id="import-report-input" accept=".json" style="display:none" multiple>
                 <button class="btn-primary" id="btn-new-test">
@@ -189,6 +197,16 @@
                     </div>
                     <div class="stat-info"><span class="stat-value">0</span><span class="stat-label">Failed</span></div>
                 </div>
+                <div class="stat-card glass-panel" id="stat-review">
+                    <div class="stat-icon bg-purple">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                            <line x1="12" y1="9" x2="12" y2="13"/>
+                            <line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                    </div>
+                    <div class="stat-info"><span class="stat-value">0</span><span class="stat-label">Needs Review</span></div>
+                </div>
                 <div class="stat-card glass-panel" id="stat-avgScore">
                     <div class="stat-icon bg-amber">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -237,9 +255,6 @@
                 </div>
             </div>
             <div id="pagination-test-cases" class="pagination-container"></div>
-        </section>
-
-            </div>
         </section>
 
         <!-- Page: Product Crawler -->
@@ -485,6 +500,7 @@
         </div>
     </main>
 
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     <script src="js/dashboard.js"></script>
 </body>
 

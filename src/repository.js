@@ -47,14 +47,64 @@ class Repository {
 
     // --- Test Runs ---
     static async getAllRuns(testCaseId = null) {
-        let sql = 'SELECT * FROM test_run';
+        let sql = `
+            SELECT 
+                trun.*,
+                tr.score,
+                tr.total_steps,
+                tr.passed_steps,
+                tr.failed_steps,
+                tr.content as report_content
+            FROM test_run trun
+            LEFT JOIN test_report tr ON trun.id = tr.test_run_id
+        `;
         const params = [];
         if (testCaseId) {
-            sql += ' WHERE test_case_id = ?';
+            sql += ' WHERE trun.test_case_id = ?';
             params.push(testCaseId);
         }
-        sql += ' ORDER BY created_at DESC';
-        return await db.query(sql, params);
+        sql += ' ORDER BY trun.created_at DESC';
+        const rows = await db.query(sql, params);
+        
+        return rows.map(r => {
+            let reportStatus = '';
+            let passedCases = 0;
+            let totalCases = 0;
+            let decision = '';
+            let reasonCodes = [];
+            let rawScore = r.score;
+
+            try {
+                if (r.report_content) {
+                    const content = typeof r.report_content === 'string' ? JSON.parse(r.report_content) : r.report_content;
+                    const cases = content.cases || [];
+                    passedCases = cases.filter(c => c.status === 'PASS').length;
+                    totalCases = cases.length;
+                    reportStatus = content.status || '';
+                    
+                    // P1 Standardized Fields
+                    decision = content.decision || '';
+                    reasonCodes = content.reason_codes || content.decision_reason_codes || [];
+                    rawScore = content.raw_score || content.quality_score || r.score;
+                    r.quality_score = content.quality_score || rawScore;
+                    r.confidence_score = content.confidence_score || 100;
+                }
+            } catch (e) {}
+            
+            const { report_content, ...rest } = r;
+            return {
+                ...rest,
+                report_status: reportStatus,
+                passed_cases: passedCases,
+                total_cases: totalCases,
+                result_status: reportStatus,
+                decision,
+                reason_codes: reasonCodes,
+                raw_score: rawScore,
+                quality_score: r.quality_score,
+                confidence_score: r.confidence_score
+            };
+        });
     }
 
     static async getRunById(id) {
@@ -141,7 +191,7 @@ class Repository {
     }
 
     static async getAllReports() {
-        // Trả về metadata của report thay vì content JSON khổng lồ
+        // Trả về metadata của report + parse content để lấy business status
         const sql = `
             SELECT 
                 tr.test_run_id as id,
@@ -149,16 +199,63 @@ class Repository {
                 tr.total_steps,
                 tr.passed_steps,
                 tr.failed_steps,
+                tr.content,
                 trun.name,
                 trun.url,
                 trun.tc_code,
-                trun.status,
+                trun.status as execution_status,
                 trun.created_at as test_time
             FROM test_report tr
             JOIN test_run trun ON tr.test_run_id = trun.id
             ORDER BY trun.created_at DESC
         `;
-        return await db.query(sql);
+        const rows = await db.query(sql);
+        return rows.map(r => {
+            const { content: _, ...rest } = r;
+            let reportStatus = '';
+            let passedCases = 0;
+            let totalCases = 0;
+            let decision = '';
+            let reason_codes = [];
+            let raw_score = r.score;
+            let quality_score = r.score;
+            let confidence_score = 100;
+
+            try {
+                if (r.content) {
+                    const content = typeof r.content === 'string' ? JSON.parse(r.content) : r.content;
+                    const cases = content.cases || [];
+                    passedCases = cases.filter(c => c.status === 'PASS').length;
+                    totalCases = cases.length;
+                    reportStatus = content.status || '';
+                    
+                    // P0.2 / P1 New Fields (Standardized)
+                    decision = content.decision || '';
+                    reason_codes = content.reason_codes || content.decision_reason_codes || [];
+                    raw_score = content.raw_score || content.quality_score || r.score;
+                    quality_score = content.quality_score || raw_score;
+                    confidence_score = content.confidence_score || 1.0;
+                }
+            } catch (e) {
+                console.error('[Repo] Error parsing report content for status:', e.message);
+            }
+            
+            return { 
+                ...rest, 
+                report_status: reportStatus,
+                passed_cases: passedCases,
+                total_cases: totalCases,
+                // Backward compatibility
+                result_status: reportStatus,
+                decision,
+                reason_codes,
+                raw_score,
+                quality_score,
+                confidence_score,
+                cases_summary: totalCases > 0 ? `${passedCases}/${totalCases} PASS` : '',
+                status: reportStatus || r.execution_status
+            };
+        });
     }
 
     static async upsertProduct(data) {
@@ -225,6 +322,45 @@ class Repository {
     /**
      * ✅ Batch insert/update products
      */
+    // --- Reliability v2.1 History (Spec §8) ---
+
+    /**
+     * Query last N runs for a given test_input_signature.
+     * Returns array of { decision, confidence_score, created_at }.
+     * Falls back gracefully if the column doesn't exist yet.
+     */
+    static async getDecisionHistoryBySignature(signature, limit = 5) {
+        try {
+            const sql = `
+                SELECT tr.content
+                FROM test_report tr
+                JOIN test_run trun ON tr.test_run_id = trun.id
+                ORDER BY trun.created_at DESC
+                LIMIT ?
+            `;
+            const rows = await db.query(sql, [limit * 3]); // oversample, then filter
+            const matched = [];
+            for (const row of rows) {
+                try {
+                    const content = typeof row.content === 'string' ? JSON.parse(row.content) : row.content;
+                    if (!content) continue;
+                    // Check each case in the report
+                    for (const c of (content.cases || [content])) {
+                        if (c.test_input_signature === signature && c.decision) {
+                            matched.push({ decision: c.decision, confidence_score: c.confidence_score || 0 });
+                            if (matched.length >= limit) break;
+                        }
+                    }
+                    if (matched.length >= limit) break;
+                } catch (_) {}
+            }
+            return matched;
+        } catch (e) {
+            console.warn('[Repo] getDecisionHistoryBySignature failed:', e.message);
+            return [];
+        }
+    }
+
     static async batchUpsertProducts(products) {
         if (products.length === 0) return;
 

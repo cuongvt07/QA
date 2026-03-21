@@ -1,5 +1,5 @@
-/**
- * Customizer Module — v3.1
+﻿/**
+ * Customizer Module â€” v3.1
  * Handles dynamic option groups that appear after selections.
  * Re-scans after each interaction to discover new groups.
  */
@@ -52,12 +52,16 @@ const ADD_TO_CART_SELECTORS = [
 ];
 
 const PREVIEW_IMAGE_SELECTORS = [
+    '.customily-preview canvas',
+    '.customily-canvas-container canvas',
+    '#formCustomization canvas',
     '.customily-preview img',
     '#customily-main-image',
+    '.preview-image img',
+    'canvas.lower-canvas',
+    'canvas',
     'img.preview',
     'img[class*="preview"]',
-    '.preview-image img',
-    'canvas',
     '#product-image img',
     '.product-image-main img',
 ];
@@ -105,6 +109,28 @@ function generateTextValue(groupName, placeholder, maxLength) {
     return mockData.getRandomString(fallbackLength);
 }
 
+function isRenderAffectingDropdown(group) {
+    if (!group || group.type !== 'dropdown') return false;
+    const label = String(group.name || '').toLowerCase();
+    const renderHints = [
+        'number of',
+        'number',
+        'qty',
+        'quantity',
+        'kid',
+        'kids',
+        'child',
+        'children',
+        'people',
+        'person',
+        'family',
+        'member',
+        'pet',
+        'pets',
+    ];
+    return renderHints.some((hint) => label.includes(hint));
+}
+
 function normalizeHexColor(raw) {
     if (!raw || typeof raw !== 'string') return '';
     const v = raw.trim();
@@ -135,9 +161,18 @@ function toColorHex(raw) {
     return normalizeHexColor(raw) || rgbStringToHex(raw);
 }
 
+function getLuminance(hex) {
+    if (!hex || hex.length < 7) return 0;
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    // Relative luminance formula
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
 async function extractOptionColor(optionElement) {
     try {
-        const rawColor = await optionElement.evaluate((node) => {
+        const result = await optionElement.evaluate((node) => {
             const transparentSet = new Set(['transparent', 'rgba(0, 0, 0, 0)']);
             const candidates = [];
             const addCandidate = (value) => {
@@ -147,16 +182,22 @@ async function extractOptionColor(optionElement) {
                 candidates.push(cleaned);
             };
 
+            // 1. Check data attributes commonly used by Printerval/Meear
             addCandidate(node.getAttribute('data-color'));
             addCandidate(node.getAttribute('data-value'));
+            addCandidate(node.getAttribute('data-variant-option-slug'));
+            addCandidate(node.getAttribute('variant-color-code'));
+            addCandidate(node.getAttribute('title'));
 
+            // 2. Check inline styles
             const inlineStyle = node.getAttribute('style') || '';
             const bgMatch = inlineStyle.match(/background(?:-color)?\s*:\s*([^;]+)/i);
             if (bgMatch && bgMatch[1]) addCandidate(bgMatch[1]);
 
+            // 3. Inspect children (swatches often have internal spans for color)
             const preferred = node.querySelectorAll('[class*="swatch"], [class*="color"], [style*="background"]');
             const fallback = node.querySelectorAll('span, div');
-            const inspectList = [node, ...Array.from(preferred).slice(0, 20), ...Array.from(fallback).slice(0, 20)];
+            const inspectList = [node, ...Array.from(preferred).slice(0, 5), ...Array.from(fallback).slice(0, 5)];
 
             for (const el of inspectList) {
                 const style = window.getComputedStyle(el);
@@ -166,13 +207,32 @@ async function extractOptionColor(optionElement) {
                 }
             }
 
-            return candidates[0] || '';
+            // 4. Also check text content if it's a simple color name
+            const text = node.innerText.trim().toLowerCase();
+            if (text.length > 0 && text.length < 20) {
+                addCandidate(text);
+            }
+
+            return candidates;
         });
 
-        const colorHex = toColorHex(rawColor);
+        // Try to find a valid hex in the candidates
+        let finalHex = '';
+        let rawSource = '';
+        
+        for (const candidate of result) {
+            const hex = toColorHex(candidate);
+            if (hex) {
+                finalHex = hex;
+                rawSource = candidate;
+                break;
+            }
+        }
+
         return {
-            raw: rawColor || '',
-            hex: colorHex || '',
+            raw: rawSource,
+            hex: finalHex,
+            luminance: finalHex ? getLuminance(finalHex) : null
         };
     } catch {
         return { raw: '', hex: '' };
@@ -181,9 +241,13 @@ async function extractOptionColor(optionElement) {
 
 /**
  * Smart wait for post-interaction loading.
+ * Hard cap: 8s max to prevent infinite waits on stuck Customily loading states.
  */
-async function smartWait(page) {
+async function smartWait(page, groupType = null) {
     let apiDetected = false;
+    let timedOut = false;
+    const start = Date.now();
+
     const requestListener = (request) => {
         const type = request.resourceType();
         const url = request.url();
@@ -196,26 +260,92 @@ async function smartWait(page) {
         }
     };
     page.on('request', requestListener);
-    // Reduced from 2s to 1s to speed up steps
-    await page.waitForTimeout(1000);
+    
+    // Adaptive listen time: shorter for image_options and dropdowns
+    const listenTime = groupType === 'image_option' ? 500 : 700;
+    await page.waitForTimeout(listenTime);
     page.off('request', requestListener);
 
     if (apiDetected) {
         console.log('      [WAIT] API request detected, waiting for loading to finish...');
         try {
-            await page.waitForSelector('#loadingElement, .customily-loading, .loading-spinner, .loading-overlay, .spinner', {
-                state: 'hidden',
-                timeout: 20000
-            });
-            await page.waitForTimeout(500); // Reduced from 800ms
+            await Promise.race([
+                page.waitForSelector('#loadingElement, .customily-loading, .loading-spinner, .loading-overlay, .spinner', {
+                    state: 'hidden',
+                    timeout: 8000 // Hard cap: 8s max
+                }),
+                new Promise(r => setTimeout(r, 8000)) // Absolute hard cap
+            ]);
+            // Adaptive settle time
+            const settleTime = groupType === 'image_option' ? 300 : 500;
+            await page.waitForTimeout(settleTime);
         } catch (e) {
-            console.warn('      [WARN] SmartWait: Loading timer exceeded 20s (likely background activity).');
-            // Don't throw to prevent crashing the whole test case for minor issues
+            console.warn('      [WARN] SmartWait: Loading timer exceeded 8s hard cap.');
+            timedOut = true;
         }
     } else {
         console.log('      [SKIP] No API request (cached), proceeding immediately.');
-        await page.waitForTimeout(100); // Reduced from 200ms
+        await page.waitForTimeout(100);
     }
+
+    return { apiDetected, waitedMs: Date.now() - start, timedOut };
+}
+
+/**
+ * Poll the preview canvas/img hash until it has been stable for N frames.
+ * Designed for image_option steps where Customily takes time to re-render.
+ *
+ * @param {Page} page - Playwright page
+ * @param {number} stableFrames - How many consecutive identical hashes to require (default 2)
+ * @param {number} pollMs - Poll interval in ms (default 300)
+ * @param {number} timeoutMs - Maximum wait in ms (default 4000)
+ */
+async function waitForPreviewSettle(page, stableFrames = 2, pollMs = 300, timeoutMs = 4000, labelConfirmed = false) {
+    const deadline = Date.now() + timeoutMs;
+    let consecutiveStable = 0;
+    let lastHash = null;
+    let sawMutation = false;
+
+    const getPreviewHash = async () => {
+        try {
+            return await page.evaluate(() => {
+                // Prefer canvas over img for accuracy
+                const canvas = document.querySelector('canvas');
+                if (canvas) {
+                    try {
+                        return canvas.toDataURL('image/webp', 0.1).slice(-64); // Last 64 chars = quick hash
+                    } catch (e) { /* tainted */ }
+                }
+                // Fallback: use img src + naturalWidth as a proxy
+                const img = document.querySelector('.customily-preview img, #customily-main-image, img[class*="preview"]');
+                if (img) return `${img.src}|${img.naturalWidth}|${img.naturalHeight}`;
+                return null;
+            });
+        } catch (e) { return null; }
+    };
+
+    while (Date.now() < deadline) {
+        await page.waitForTimeout(pollMs);
+        const hash = await getPreviewHash();
+        if (hash === null) { consecutiveStable = 0; continue; }
+
+        if (hash !== lastHash) {
+            if (lastHash !== null) sawMutation = true; // First actual change seen
+            lastHash = hash;
+            consecutiveStable = 0;
+
+            if (labelConfirmed && sawMutation) {
+                console.log('      [SETTLE] Label confirmed and canvas mutated. Exiting early.');
+                break;
+            }
+        } else {
+            if (sawMutation) consecutiveStable++;
+            if (consecutiveStable >= stableFrames) break; // Stable after mutation
+        }
+    }
+
+    const reason = consecutiveStable >= stableFrames ? 'settled' : 'timed-out';
+    console.log(`      [SETTLE] Preview settle: ${reason} after ${Date.now() - (deadline - timeoutMs)}ms`);
 }
 
 /**
@@ -231,8 +361,27 @@ async function detectCustomizer(page) {
     return { found: false, selector: null };
 }
 
+async function waitForGroupCountStable(page, { pollMs = 250, stableRounds = 2, timeoutMs = 1200 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let stable = 0;
+    let lastCount = -1;
+    while (Date.now() < deadline) {
+        const groupsAfter = await getVisibleOptionGroups(page);
+        const count = groupsAfter.length;
+        if (count === lastCount) {
+            stable++;
+            if (stable >= stableRounds) break;
+        } else {
+            stable = 0;
+            lastCount = count;
+        }
+        await page.waitForTimeout(pollMs);
+    }
+}
+
 /**
- * Get currently visible customily-gr groups.
+ * Returns an array of visible option groups,
+ * each containing the main structure and any child inputs.
  */
 async function getVisibleOptionGroups(page) {
     const groups = [];
@@ -292,13 +441,82 @@ async function getVisibleOptionGroups(page) {
 }
 
 async function capturePreviewScreenshot(page, filepath) {
-    for (const selector of PREVIEW_IMAGE_SELECTORS) {
-        const el = await page.$(selector);
-        if (el && await el.isVisible()) {
-            await el.screenshot({ path: filepath });
+    const fs = require('fs');
+    
+    // 1. Try canvas extraction first (fastest, perfectly ignores DOM popups and delays)
+    try {
+        const canvasData = await page.evaluate(() => {
+            const findBestCanvas = () => {
+                const canvases = Array.from(document.querySelectorAll('canvas'));
+                if (canvases.length === 0) return null;
+
+                // Priority 1: Visible canvases inside customizer containers
+                const customizerSelectors = ['.customily-preview', '.customily-app', '#formCustomization', '.customily-canvas-container'];
+                for (const sel of customizerSelectors) {
+                    const container = document.querySelector(sel);
+                    if (container) {
+                        const internal = container.querySelector('canvas');
+                        if (internal && internal.offsetWidth > 50) return internal;
+                    }
+                }
+
+                // Priority 2: Largest visible canvas
+                const visible = canvases
+                    .filter(c => c.offsetWidth > 100 && c.offsetHeight > 100)
+                    .sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight));
+                
+                return visible[0] || null;
+            };
+
+            const canvas = findBestCanvas();
+            if (!canvas) return null;
+
+            // Check if canvas is blank/empty
+            // We sample a few points or check if the data URL is extremely short (not always reliable)
+            // Better: draw to a tiny 1x1 or check some pixels
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (ctx) {
+                const pix = ctx.getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data;
+                // If the center pixel is fully transparent, it might be loading or blank
+                if (pix[3] === 0) {
+                     // Try another point
+                     const pix2 = ctx.getImageData(10, 10, 1, 1).data;
+                     if (pix2[3] === 0) return 'BLANK_DETECTED';
+                }
+            }
+
+            return canvas.toDataURL('image/png');
+        });
+
+        if (canvasData && canvasData !== 'BLANK_DETECTED') {
+            const base64Data = canvasData.replace(/^data:image\/png;base64,/, '');
+            fs.writeFileSync(filepath, base64Data, 'base64');
             return filepath;
+        } else if (canvasData === 'BLANK_DETECTED') {
+            console.warn('    [WARN] Canvas detected as blank/transparent, falling back to element screenshot.');
         }
+    } catch (e) {
+        console.warn(`    [WARN] Direct canvas capture failed, falling back to DOM screenshot: ${e.message}`);
     }
+
+    // 2. Fallback to DOM element screenshot
+    for (const selector of PREVIEW_IMAGE_SELECTORS) {
+        try {
+            const el = await page.$(selector);
+            if (el) {
+                const isVisible = await el.isVisible().catch(() => false);
+                if (isVisible) {
+                    const box = await el.boundingBox();
+                    if (box && box.width > 50 && box.height > 50) {
+                        await el.screenshot({ path: filepath });
+                        return filepath;
+                    }
+                }
+            }
+        } catch (err) { /* ignore individual selector failures */ }
+    }
+    
+    // Final desperate fallback
     await page.screenshot({ path: filepath, fullPage: false });
     return filepath;
 }
@@ -371,11 +589,12 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
     let isFirstImageGroup = true;
     const processedGroups = new Set();
     let maxIterations = 150;
+    // let previousAfterPath = null; // Reverted as per user request for full before/after parity
 
     while (maxIterations-- > 0) {
         // Periodically remove popups/Klaviyo elements that might have appeared
         await ensureCleanPage(page);
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(100);
 
         const groups = await getVisibleOptionGroups(page);
         let foundNewGroup = false;
@@ -390,7 +609,9 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
             console.log(`    [STEP] Processing Group ${stepIndex}: "${group.name}" (${group.type}) [Iter: ${150 - maxIterations}]`);
 
             const expectsVisualChange = group.type === 'image_option' || group.type === 'text_input' || group.type === 'file_upload';
+            const renderAffectingControl = isRenderAffectingDropdown(group);
             const skipDiffCheck = group.type === 'dropdown';
+            const capturePreviewState = group.type !== 'dropdown' || renderAffectingControl;
 
             const stepData = {
                 step_id: stepIndex,
@@ -399,6 +620,12 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                 group_type: group.type,
                 expects_visual_change: expectsVisualChange,
                 skip_diff_check: skipDiffCheck,
+                capture_preview_state: capturePreviewState,
+                render_affecting_control: renderAffectingControl,
+                context_transition: renderAffectingControl,
+                selection_changes_structure: false,
+                changes_preview: expectsVisualChange || renderAffectingControl,
+                observed_preview_change_score: null,
                 requires_ocr: group.type === 'text_input',
                 value_chosen: '',
                 option_thumbnail: '',
@@ -408,30 +635,27 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                 state_after: '',
                 diff_score: -1,
                 status: 'PASS',
+                interaction_status: 'PASS', // Did the mechanical action succeed?
+                validation_status: 'PENDING', // Will be populated in Phase 4
                 message: '',
                 code_evaluation: { diff_score: -1, status: 'PENDING' },
                 ai_evaluation: { ai_score: -1, ai_verdict: 'PENDING', ai_reason: '' },
             };
 
             try {
-                // Optimized: Reuse the "After" of the previous step as "Before" of this step
                 let beforePath = path.join(screenshotDir, `step_${stepIndex}_before.png`);
-                let alreadyCapturedBefore = false;
-
-                if (stepIndex > 1) {
-                    const prevAfterPath = path.join(screenshotDir, `step_${stepIndex - 1}_after.png`);
-                    if (fs.existsSync(prevAfterPath)) {
-                        fs.copyFileSync(prevAfterPath, beforePath);
-                        alreadyCapturedBefore = true;
-                    }
-                }
-
-                if (!alreadyCapturedBefore) {
-                    await smartWait(page);
-                    await capturePreviewScreenshot(page, beforePath);
-                }
                 
-                stepData.state_before = beforePath;
+                // Wait for the specific group type to ensure the page is ready
+                const waitTime = group.type === 'image_option' ? 250 : 150;
+                await page.waitForTimeout(waitTime);
+                
+                // Ensure page is clean and stabilized before 'before' capture
+                await ensureCleanPage(page);
+
+                if (stepData.capture_preview_state) {
+                    await capturePreviewScreenshot(page, beforePath);
+                    stepData.state_before = beforePath;
+                }
 
                 // Capture structural state before
                 const groupsBefore = await getVisibleOptionGroups(page);
@@ -468,7 +692,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                     });
                     await page.keyboard.press('Enter');
                     await input.evaluate((node) => node.blur());
-                    await page.waitForTimeout(1000);
+                    await page.waitForTimeout(400);
                     stepData.value_chosen = value;
                     if (maxLength) stepData.message = `Text input respects maxlength=${maxLength}.`;
                     prevSet.add(value);
@@ -496,7 +720,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                         stepData.value_chosen = selectedOpt.text;
                         prevSet.add(selectedOpt.text);
                     }
-                    await smartWait(page);
+                    // Redundant smartWait removed (uses global one at end of block)
 
                 } else if (group.type === 'image_option') {
                     stepData.action = 'Select Option';
@@ -514,20 +738,57 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                             const prevSet = previouslySelectedValues[group.name];
                             const nonActiveItems = [];
                             const allNonActiveItems = [];
+                            
+                            // Color prioritization rule: avoid black/dark
+                            const prioritizedItems = [];
+                            const deprioritizedItems = [];
+
                             for (const item of items) {
                                 const cls = (await item.getAttribute('class')) || '';
                                 if (!cls.includes('active')) {
                                     const colorMeta = await extractOptionColor(item);
-                                    const optionKey = (await item.getAttribute('title')) || colorMeta.hex || colorMeta.raw || '';
-                                    allNonActiveItems.push(item);
-                                    if (!prevSet.has(optionKey)) nonActiveItems.push(item);
+                                    const rawTitle = (await item.getAttribute('title')) || '';
+                                    const optionKey = rawTitle || colorMeta.hex || colorMeta.raw || '';
+                                    
+                                    const itemData = { element: item, key: optionKey, color: colorMeta, title: rawTitle };
+                                    allNonActiveItems.push(itemData);
+                                    
+                                    if (!prevSet.has(optionKey)) {
+                                        const isDark = (colorMeta.hex === '#000000' || colorMeta.hex === '#111111' || 
+                                                       optionKey.toLowerCase().includes('black') || 
+                                                       optionKey.toLowerCase().includes('dark'));
+                                        
+                                        if (isDark) deprioritizedItems.push(itemData);
+                                        else prioritizedItems.push(itemData);
+                                        
+                                        nonActiveItems.push(item);
+                                    }
                                 }
                             }
+                            
                             if (allNonActiveItems.length === 0) {
                                 skipClick = true;
                                 targetItem = items[0];
+                                stepData.selection_reason = 'All items active, picking first.';
                             } else {
-                                targetItem = (nonActiveItems.length > 0 ? nonActiveItems : allNonActiveItems)[Math.floor(Math.random() * (nonActiveItems.length > 0 ? nonActiveItems.length : allNonActiveItems.length))];
+                                let chosen;
+                                if (prioritizedItems.length > 0) {
+                                    chosen = prioritizedItems[Math.floor(Math.random() * prioritizedItems.length)];
+                                    stepData.selection_reason = 'Preferred bright/contrast color.';
+                                } else if (deprioritizedItems.length > 0) {
+                                    chosen = deprioritizedItems[Math.floor(Math.random() * deprioritizedItems.length)];
+                                    stepData.selection_reason = 'Only dark colors available.';
+                                    // Optional: user requested more settle time for dark colors
+                                    stepData.requires_extra_settle = true;
+                                } else {
+                                    const pool = nonActiveItems.length > 0 ? nonActiveItems : allNonActiveItems.map(i => i.element);
+                                    targetItem = pool[Math.floor(Math.random() * pool.length)];
+                                    stepData.selection_reason = 'Fall-back random selection.';
+                                }
+                                
+                                if (chosen) {
+                                    targetItem = chosen.element;
+                                }
                             }
                             if (isFirstImageGroup) isFirstImageGroup = false;
                         }
@@ -569,27 +830,17 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                         }
                     }
                 }
-
-                await smartWait(page);
-
-                // Capture structural state after
-                const groupsAfter = await getVisibleOptionGroups(page);
-                const countAfter = groupsAfter.length;
-                if (countAfter > countBefore) {
-                    console.log(`      [INFO] Menu Opener detected: groups increased ${countBefore} -> ${countAfter}`);
-                    stepData.is_menu_opener = true;
-                    stepData.expects_visual_change = false; 
-                    stepData.skip_diff_check = true;
-                    // Extra wait for sub-menu animations/rendering
-                    await page.waitForTimeout(2000);
-                }
+                
+                const tWait = Date.now();
+                const waitResult = await smartWait(page, group.type);
+                console.log(`      [PERF] smartWait (${group.type}): ${waitResult.waitedMs}ms`);
 
                 // LABEL MATCHING: Check if chosen value appears in customization labels
+                // MOVED UP to allow early settle escape
                 if (stepData.value_chosen) {
                     const chosenLower = stepData.value_chosen.toLowerCase();
                     const labelsAfter = await page.$$eval('.customization-info-name, .customily-personalization-info', els => els.map(el => el.innerText.toLowerCase()));
                     
-                    // If the choice appears in a label that wasn't there before OR any label matches exactly
                     const foundMatch = labelsAfter.some(l => l.includes(chosenLower));
                     if (foundMatch) {
                         console.log(`      [INFO] Label confirmation: Choice "${stepData.value_chosen}" found in DOM labels.`);
@@ -598,12 +849,81 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                     }
                 }
 
+                // For image_option steps, wait for canvas to fully settle before capturing
+                // This prevents capturing the 'after' before Customily renders the change
+                // Note: we still wait if skip_diff_check is true (e.g. from label confirm) but we can exit early. 
+                // We only skip if skipClick was true (which means we didn't even click)
+                if ((group.type === 'image_option' || stepData.render_affecting_control) &&
+                    stepData.action !== 'Menu Opener' &&
+                    !stepData.message.includes('skipped click')) {
+                    const tSettle = Date.now();
+                    
+                    // Risk-based adaptive execution
+                    let adaptiveTimeout = stepData.render_affecting_control ? 2200 : 1800;
+                    if (waitResult.apiDetected) adaptiveTimeout = 4000;
+                    else if (stepData.is_label_confirmed) adaptiveTimeout = 1400;
+                    
+                    // Extra settle if dark color was chosen
+                    if (stepData.requires_extra_settle) {
+                        console.log('      [SETTLE] Extra wait for dark color (low contrast)...');
+                        adaptiveTimeout += 1000;
+                    }
+
+                    await waitForPreviewSettle(page, 2, 250, adaptiveTimeout, stepData.is_label_confirmed);
+                    console.log(`      [PERF] waitForPreviewSettle (${group.type}): ${Date.now() - tSettle}ms`);
+                }
+
+                // Capture structural state after
+                const tGroups = Date.now();
+                const groupsAfter = await getVisibleOptionGroups(page);
+                const countAfter = groupsAfter.length;
+                if (countAfter > countBefore) {
+                    console.log(`      [INFO] Menu Opener detected: groups increased ${countBefore} -> ${countAfter} (took ${Date.now() - tGroups}ms)`);
+                    stepData.is_menu_opener = true;
+                    stepData.selection_changes_structure = true;
+                    stepData.context_transition = true;
+                    stepData.expects_visual_change = false; 
+                    stepData.skip_diff_check = true;
+                    stepData.message = stepData.message ? `${stepData.message} Structure changed after selection.` : 'Structure changed after selection.';
+                    // Extra wait for sub-menu animations/rendering
+                    await waitForGroupCountStable(page);
+                }
+
                 const afterPath = path.join(screenshotDir, `step_${stepIndex}_after.png`);
-                await capturePreviewScreenshot(page, afterPath);
-                stepData.state_after = afterPath;
+                if (stepData.capture_preview_state) {
+                    const tSnap = Date.now();
+                    await capturePreviewScreenshot(page, afterPath);
+                    console.log(`      [PERF] screenshot (after): ${Date.now() - tSnap}ms`);
+                    stepData.state_after = afterPath;
+                }
+                // previousAfterPath = afterPath; // This line was commented out in the original, keeping it that way.
+
+                // Capture preview-change evidence even for skipped scoring steps so temporal attribution stays accurate.
+                if (stepData.capture_preview_state && stepData.state_before && stepData.state_after && fs.existsSync(stepData.state_before)) {
+                    try {
+                        const { calculateVisualDiff } = require('../actions/validator');
+                        let { diffPercent } = await calculateVisualDiff(stepData.state_before, afterPath);
+                        if (group.type === 'image_option' && diffPercent === 0) {
+                            console.log(`      [RETRY] image_option after=0% diff - canvas may not be settled. Retaking in 1200ms...`);
+                            await page.waitForTimeout(1200);
+                            await capturePreviewScreenshot(page, afterPath);
+                            console.log(`      [RETRY] After screenshot retaken.`);
+                            diffPercent = (await calculateVisualDiff(stepData.state_before, afterPath)).diffPercent;
+                        }
+                        stepData.observed_preview_change_score = diffPercent;
+                        if (diffPercent > 0.01) {
+                            stepData.changes_preview = true;
+                        }
+                    } catch (retryCheckErr) {
+                        console.warn(`      [RETRY] Quick diff check failed: ${retryCheckErr.message}`);
+                    }
+                }
 
             } catch (error) {
+                console.error(`    [ERROR] Customization failed: ${error.message}`);
                 stepData.status = 'FAIL';
+                stepData.interaction_status = 'FAIL';
+                stepData.validation_status = 'FAIL';
                 stepData.message = `ERROR: ${error.message}`;
             }
             timeline.push(stepData);
@@ -618,12 +938,54 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
  * Handles product variants (Style, Size, etc.) that are outside the main customizer.
  * Usually found in standard product pages.
  */
-async function handleProductVariants(page) {
-    const selector = '.js-select-variant, .variant-select, select[name*="variant"], select[id*="variant"]';
-    const elements = await page.$$(selector);
+async function handleProductVariants(page, logPrefix = '', options = {}) {
+    const { variants_selected } = options;
+    const variantSelector = '.js-select-variant, .variant-select, select[name*="variant"], select[id*="variant"]';
+    
+    // ==========================================
+    // REPLAY MODE: Fast Path
+    // ==========================================
+    if (variants_selected && Array.isArray(variants_selected) && variants_selected.length > 0) {
+        console.log(`${logPrefix} [VARIANT] Replaying ${variants_selected.length} cached selections...`);
+        const elements = await page.$$(variantSelector);
+        
+        for (const entry of variants_selected) {
+            try {
+                const el = elements[entry.groupIndex];
+                if (!el) {
+                    console.warn(`${logPrefix} [VARIANT] Group ${entry.groupIndex} not found during replay.`);
+                    continue;
+                }
+
+                if (entry.type === 'select') {
+                    await el.selectOption(entry.value);
+                    console.log(`${logPrefix}      [VARIANT] Replayed select: ${entry.text}`);
+                } else if (entry.type === 'click') {
+                    const items = await el.$$('.js-choose-variant, .product-size-item:not(.close-choose-size), li[ng-click*="selectVariant"], .swatch-option, .variant-item');
+                    const target = items[entry.itemIndex];
+                    if (target) {
+                        await target.click();
+                        console.log(`${logPrefix}      [VARIANT] Replayed click: ${entry.text}`);
+                        await page.waitForTimeout(300);
+                    } else {
+                        console.warn(`${logPrefix}      [VARIANT] Item ${entry.itemIndex} not found in group ${entry.groupIndex}`);
+                    }
+                }
+            } catch (replayErr) {
+                console.warn(`${logPrefix} [WARN] Replay failed for variant entry: ${replayErr.message}`);
+            }
+        }
+        return variants_selected;
+    }
+
+    // ==========================================
+    // SCAN MODE: Heuristic Path
+    // ==========================================
+    const elements = await page.$$(variantSelector);
     const results = [];
 
-    for (const el of elements) {
+    for (let i = 0; i < elements.length; i++) {
+        const el = elements[i];
         try {
             const isVisible = await el.isVisible();
             if (!isVisible) continue;
@@ -631,68 +993,79 @@ async function handleProductVariants(page) {
             const tagName = await el.evaluate(node => node.tagName.toLowerCase());
             
             if (tagName === 'select') {
-                // Standard SELECT handling
-                const name = await el.evaluate(node => {
-                    const label = document.querySelector(`label[for="${node.id}"]`);
-                    return (label ? label.innerText : (node.name || node.id || 'Variant')).trim();
-                });
-
-                const value = await el.inputValue();
-                const hasSelection = value && value !== '' && !value.toLowerCase().includes('select');
-
-                if (!hasSelection) {
-                    const options = await el.$$eval('option', opts => {
-                        return opts
-                            .map((o, i) => ({ index: i, value: o.value, text: o.innerText.trim(), disabled: o.disabled }))
-                            .filter(o => !o.disabled && o.value && !o.value.toLowerCase().includes('select') && o.text.toLowerCase().indexOf('select') === -1);
-                    });
-
-                    if (options.length > 0) {
-                        const firstValid = options[0];
-                        await el.selectOption(firstValid.value);
-                        results.push(`${name}: ${firstValid.text}`);
-                        console.log(`      [VARIANT] Selected ${name}: ${firstValid.text}`);
-                    }
-                } else {
-                    const selectedText = await el.evaluate(node => node.options[node.selectedIndex].text.trim());
-                    results.push(`${name}: ${selectedText} (Pre-selected)`);
-                    console.log(`      [VARIANT] Already selected ${name}: ${selectedText}`);
-                }
-            } else {
-                // Custom UI handling (like the UL/LI Size list)
                 const name = await el.evaluate(node => {
                     const label = node.querySelector('label') || document.querySelector(`label[for="${node.id}"]`);
                     return (label ? label.innerText : (node.getAttribute('arial-label') || 'Variant')).trim();
                 });
 
-                // Check if already selected (look for text that doesn't say "Choose")
-                const currentText = await el.evaluate(node => {
-                    const chooseDiv = node.querySelector('.choose-a-size, .current-value, .selected-value');
-                    return chooseDiv ? chooseDiv.innerText.trim() : '';
+                const options = await el.$$eval('option', opts => {
+                    return opts
+                        .map((o, idx) => ({ 
+                            index: idx, 
+                            value: o.value, 
+                            text: o.innerText.trim(), 
+                            disabled: o.disabled 
+                        }))
+                        .filter(o => !o.disabled && o.value && !o.value.toLowerCase().includes('select') && o.text.toLowerCase().indexOf('select') === -1);
                 });
 
-                if (!currentText || currentText.toLowerCase().includes('choose')) {
-                    // Need to select
-                    const items = await el.$$('.js-choose-variant, .product-size-item:not(.close-choose-size), li[ng-click*="selectVariant"]');
-                    if (items.length > 0) {
-                        // Sometimes need to click to open the list first
-                        const opener = await el.$('.choose-a-size, .choose-option');
-                        if (opener) await opener.click();
-                        
-                        await page.waitForTimeout(300);
-                        
-                        // Select first valid item
-                        const firstItem = items[0];
-                        const itemText = await firstItem.innerText();
-                        await firstItem.click();
-                        results.push(`${name}: ${itemText.trim()}`);
-                        console.log(`      [VARIANT] Clicked ${name}: ${itemText.trim()}`);
-                        
-                        await page.waitForTimeout(500); 
+                if (options.length > 0) {
+                    let chosen = options[0];
+                    let reason = 'First available';
+
+                    const darkKeywords = ['black', 'dark', 'charcoal', 'navy', 'night'];
+                    const nonDark = options.find(o => !darkKeywords.some(k => o.text.toLowerCase().includes(k)));
+                    
+                    if (nonDark && darkKeywords.some(k => options[0].text.toLowerCase().includes(k))) {
+                        chosen = nonDark;
+                        reason = `Avoided dark color (${options[0].text}) for ${nonDark.text}`;
                     }
-                } else {
-                    results.push(`${name}: ${currentText} (Pre-selected)`);
-                    console.log(`      [VARIANT] Already selected ${name}: ${currentText}`);
+
+                    await el.selectOption(chosen.value);
+                    const labelStr = `${name}: ${chosen.text}`;
+                    results.push({ type: 'select', groupIndex: i, value: chosen.value, text: labelStr });
+                    console.log(`      [VARIANT] Selected ${labelStr} (${reason})`);
+                }
+            } else {
+                const name = await el.evaluate(node => {
+                    const label = node.querySelector('label') || document.querySelector(`label[for="${node.id}"]`);
+                    return (label ? label.innerText : (node.getAttribute('arial-label') || 'Variant')).trim();
+                });
+
+                // Expand logic
+                const expanders = await el.$$('.more-color, .expand-colors, .show-more, [class*="more"]');
+                for(const exp of expanders) {
+                    if (await exp.isVisible()) {
+                        await exp.click();
+                        await page.waitForTimeout(300);
+                    }
+                }
+
+                const items = await el.$$('.js-choose-variant, .product-size-item:not(.close-choose-size), li[ng-click*="selectVariant"], .swatch-option, .variant-item');
+                
+                if (items.length > 0) {
+                    const itemData = [];
+                    for (let j = 0; j < items.length; j++) {
+                        const item = items[j];
+                        const colorInfo = await extractOptionColor(item);
+                        const text = await item.innerText();
+                        itemData.push({ element: item, index: j, text: text.trim(), color: colorInfo });
+                    }
+
+                    let chosenItem = itemData[0];
+                    let reason = 'First available';
+
+                    const goodContrast = itemData.find(d => d.color.luminance !== null && d.color.luminance > 40);
+                    if (goodContrast && (itemData[0].color.luminance === null || itemData[0].color.luminance <= 40)) {
+                        chosenItem = goodContrast;
+                        reason = `High contrast color (lum:${Math.round(goodContrast.color.luminance)})`;
+                    }
+
+                    await chosenItem.element.click();
+                    const labelStr = `${name}: ${chosenItem.text}`;
+                    results.push({ type: 'click', groupIndex: i, itemIndex: chosenItem.index, text: labelStr });
+                    console.log(`      [VARIANT] Clicked ${labelStr} (${reason})`);
+                    await page.waitForTimeout(500);
                 }
             }
         } catch (e) {
@@ -708,7 +1081,7 @@ async function clickAddToCart(page) {
         const footer = await page.$('#customizationContentFooter, .customization-content-footer, .product-actions');
         if (footer) {
             console.log('      [ACTION] Scrolling footer container into view...');
-            await footer.scrollIntoViewIfNeeded();
+            await footer.scrollIntoViewIfNeeded({ timeout: 2000 });
             await page.waitForTimeout(500);
         }
     } catch (e) { /* ignore */ }

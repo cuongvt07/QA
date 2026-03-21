@@ -53,21 +53,47 @@ async function migrate() {
             console.log('    - test_run.status converted to ENUM (Uppercase)');
 
             // Second, migrate test_case status values
-            // Existing: ('pending', 'running', 'pass', 'fail')
-            // Target: ('PENDING', 'QUEUED', 'RUNNING', 'PASS', 'FAIL')
+            // Target: ('PENDING', 'QUEUED', 'RUNNING', 'PASS', 'FAIL', 'FATAL', 'REVIEW')
             
             // Normalize existing to uppercase
-            await db.query("UPDATE test_case SET status = 'PENDING' WHERE status NOT IN ('pending', 'running', 'pass', 'fail', 'PENDING', 'QUEUED', 'RUNNING', 'PASS', 'FAIL')");
+            await db.query("UPDATE test_case SET status = 'PENDING' WHERE status NOT IN ('pending', 'running', 'pass', 'fail', 'PENDING', 'QUEUED', 'RUNNING', 'PASS', 'FAIL', 'FATAL', 'REVIEW')");
             await db.query("UPDATE test_case SET status = UPPER(status)");
             
             await db.query(`
                 ALTER TABLE test_case 
-                MODIFY COLUMN status ENUM('PENDING', 'QUEUED', 'RUNNING', 'PASS', 'FAIL') NOT NULL DEFAULT 'PENDING'
+                MODIFY COLUMN status ENUM('PENDING', 'QUEUED', 'RUNNING', 'PASS', 'FAIL', 'FATAL', 'REVIEW') NOT NULL DEFAULT 'PENDING'
             `);
-            console.log('    - test_case.status converted to ENUM (Uppercase)');
+            console.log('    - test_case.status converted to ENUM (Uppercase + Fatal/Review)');
 
         } catch (e) {
             console.error('    - Error optimizing status columns:', e.message);
+        }
+
+        // 4. Add last_run_id to test_case
+        console.log('[4/4] Adding last_run_id to test_case...');
+        try {
+            const tcColumns = await db.query("SHOW COLUMNS FROM test_case LIKE 'last_run_id'");
+            if (tcColumns.length === 0) {
+                await db.query(`
+                    ALTER TABLE test_case 
+                    ADD COLUMN last_run_id VARCHAR(50) DEFAULT NULL AFTER status
+                `);
+                console.log('    - last_run_id column added (VARCHAR).');
+            } else {
+                // Check if it's INT and needs conversion
+                const type = tcColumns[0].Type;
+                if (type.toLowerCase().includes('int')) {
+                    await db.query(`
+                        ALTER TABLE test_case 
+                        MODIFY COLUMN last_run_id VARCHAR(50) DEFAULT NULL
+                    `);
+                    console.log('    - last_run_id column converted from INT to VARCHAR(50).');
+                } else {
+                    console.log('    - last_run_id already exists and is not INT.');
+                }
+            }
+        } catch (e) {
+            console.error('    - Error adding/modifying last_run_id:', e.message);
         }
 
         console.log('\n✅ Database migration completed successfully.');

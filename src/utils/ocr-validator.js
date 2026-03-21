@@ -7,14 +7,22 @@ const Tesseract = require('tesseract.js');
 const path = require('path');
 
 let worker = null;
+let workerInitPromise = null;
 
 /**
  * Initialize the Tesseract worker (call once, reuse across steps)
+ * Re-entrant safe.
  */
 async function initOcrWorker() {
     if (worker) return;
-    worker = await Tesseract.createWorker('eng');
-    console.log('    🔍 OCR Worker initialized (Tesseract.js)');
+    if (workerInitPromise) return workerInitPromise;
+
+    workerInitPromise = (async () => {
+        worker = await Tesseract.createWorker('eng');
+        console.log('    🔍 OCR Worker initialized (Tesseract.js)');
+        workerInitPromise = null;
+    })();
+    return workerInitPromise;
 }
 
 /**
@@ -146,8 +154,49 @@ function levenshteinDistance(a, b) {
     return matrix[b.length][a.length];
 }
 
+/**
+ * Verify that expected text appears on a cropped preview image.
+ * 
+ * @param {string} imagePath - Absolute path to the screenshot PNG
+ * @param {Object} diffMask - {x, y, w, h} bounding box
+ * @param {string} expectedText - The text that was typed
+ * @returns {Promise<Object>}
+ */
+async function verifyTextOnCrop(imagePath, diffMask, expectedText) {
+    if (!worker) await initOcrWorker();
+    if (!diffMask || !expectedText) return { found: false, confidence: 0 };
+    if (!diffMask.w || !diffMask.h || diffMask.w <= 0 || diffMask.h <= 0) {
+        return { found: false, confidence: 0, matchDetail: 'Invalid diffMask dimensions (0 or negative).' };
+    }
+
+    const sharp = require('sharp');
+    const fs = require('fs');
+    const randomSuffix = Math.round(Math.random() * 10000);
+    const tempCropPath = path.join(process.cwd(), 'tmp', `ocr_crop_${Date.now()}_${randomSuffix}.png`);
+
+    try {
+        await sharp(imagePath)
+            .extract({
+                left: Math.round(diffMask.x),
+                top: Math.round(diffMask.y),
+                width: Math.round(diffMask.w),
+                height: Math.round(diffMask.h)
+            })
+            .toFile(tempCropPath);
+
+        const result = await verifyTextOnPreview(tempCropPath, expectedText);
+        
+        if (fs.existsSync(tempCropPath)) fs.unlinkSync(tempCropPath);
+        return result;
+    } catch (error) {
+        if (fs.existsSync(tempCropPath)) fs.unlinkSync(tempCropPath);
+        return { found: false, confidence: 0, matchDetail: `OCR crop error: ${error.message}` };
+    }
+}
+
 module.exports = {
     initOcrWorker,
     terminateOcrWorker,
     verifyTextOnPreview,
+    verifyTextOnCrop,
 };

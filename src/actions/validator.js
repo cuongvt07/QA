@@ -78,51 +78,55 @@ async function validatePreviewImage(page) {
  */
 async function calculateVisualDiff(beforePath, afterPath) {
     try {
-        const { PNG } = require('pngjs');
-        const pixelmatch = require('pixelmatch');
         const fsPromises = require('fs').promises;
-
         if (!fs.existsSync(beforePath) || !fs.existsSync(afterPath)) {
             return { diffPercent: -1, error: 'Screenshot file not found' };
         }
-
-        // Read files asynchronously
         const [beforeBuf, afterBuf] = await Promise.all([
             fsPromises.readFile(beforePath),
             fsPromises.readFile(afterPath)
         ]);
+        return await calculateVisualDiffBuffers(beforeBuf, afterBuf);
+    } catch (error) {
+        return { diffPercent: -1, error: error.message };
+    }
+}
 
-        // Parse PNGs asynchronously
-        const parsePng = (buffer) => new Promise((resolve, reject) => {
-            new PNG().parse(buffer, (err, data) => err ? reject(err) : resolve(data));
-        });
+/**
+ * Calculate pixel diff between two image buffers.
+ * Normalizes both images to a common canvas first to avoid size-mismatch -1.
+ */
+async function calculateVisualDiffBuffers(beforeBuf, afterBuf) {
+    try {
+        const sharp = require('sharp');
+        const { PNG } = require('pngjs');
+        const pixelmatch = require('pixelmatch');
 
-        const [img1, img2] = await Promise.all([
-            parsePng(beforeBuf),
-            parsePng(afterBuf)
+        // Get dimensions of both images
+        const [metaBefore, metaAfter] = await Promise.all([
+            sharp(beforeBuf).metadata(),
+            sharp(afterBuf).metadata()
         ]);
 
-        const width = Math.min(img1.width, img2.width);
-        const height = Math.min(img1.height, img2.height);
+        // Use the minimum common canvas to avoid distortion
+        const width  = Math.min(metaBefore.width  || 648, metaAfter.width  || 648);
+        const height = Math.min(metaBefore.height || 653, metaAfter.height || 653);
 
-        // Resize if needed (crop to smallest)
-        const resizedImg1 = cropPng(img1, width, height);
-        const resizedImg2 = cropPng(img2, width, height);
+        // Normalize: extract common canvas from top-left (no stretching)
+        const normalize = (buf) => sharp(buf)
+            .extract({ left: 0, top: 0, width, height })
+            .ensureAlpha()
+            .raw()
+            .toBuffer();
 
-        const diff = new PNG({ width, height });
-        const numDiffPixels = pixelmatch(
-            resizedImg1.data,
-            resizedImg2.data,
-            diff.data,
-            width,
-            height,
-            { threshold: 0.1 }
-        );
+        const [raw1, raw2] = await Promise.all([normalize(beforeBuf), normalize(afterBuf)]);
+
+        const diff = Buffer.alloc(width * height * 4);
+        const numDiffPixels = pixelmatch(raw1, raw2, diff, width, height, { threshold: 0.1, includeAA: false });
 
         const totalPixels = width * height;
-        const diffPercent = ((numDiffPixels / totalPixels) * 100).toFixed(2);
-
-        return { diffPercent: parseFloat(diffPercent), error: null };
+        const diffPercent = parseFloat(((numDiffPixels / totalPixels) * 100).toFixed(2));
+        return { diffPercent, error: null };
     } catch (error) {
         return { diffPercent: -1, error: error.message };
     }
@@ -151,13 +155,41 @@ function cropPng(png, width, height) {
  * Verify cart was updated after Add to Cart click
  */
 async function verifyCart(page) {
-    await page.waitForTimeout(2000);
+    // Redundant 2s wait removed as per user request (Wait is already handled in clickAddToCart)
 
     // 1. Check for "Added!" confirmation text on the button itself
     try {
         const addedText = await page.$('.added-to-cart-content');
         if (addedText && await addedText.isVisible()) {
             return { success: true, method: 'button_text', message: 'Button shows "Added!" confirmation.' };
+        }
+    } catch (e) { /* continue */ }
+
+    // 1b. Printerval button state change pattern (button disabled or class change after click)
+    try {
+        const addToCartBtn = await page.$('.customization-add-to-cart, .add-to-cart-btn, button[class*="add-to-cart"]');
+        if (addToCartBtn) {
+            const btnState = await addToCartBtn.evaluate(node => ({
+                isDisabled: node.disabled || node.getAttribute('aria-disabled') === 'true',
+                hasAddedClass: node.classList.contains('added') || node.classList.contains('is-added'),
+                addedContentVisible: (() => {
+                    const addedEl = node.querySelector('.added-to-cart-content');
+                    return addedEl ? addedEl.offsetParent !== null : false;
+                })(),
+                text: node.textContent?.trim().toLowerCase() || '',
+            }));
+            if (btnState.isDisabled || btnState.hasAddedClass || btnState.addedContentVisible ||
+                btnState.text.includes('added') || btnState.text.includes('in cart')) {
+                return { success: true, method: 'button_state_change', message: `Button state indicates success: disabled=${btnState.isDisabled}, added=${btnState.hasAddedClass}` };
+            }
+        }
+    } catch (e) { /* continue */ }
+
+    // 1c. WooCommerce patterns
+    try {
+        const woo = await page.$('.woocommerce-message, .added_to_cart, .wc-block-components-notice');
+        if (woo && await woo.isVisible()) {
+            return { success: true, method: 'woocommerce', message: 'WooCommerce cart confirmation detected.' };
         }
     } catch (e) { /* continue */ }
 
@@ -237,25 +269,35 @@ async function verifyCart(page) {
         return { success: true, method: 'redirect', message: `Redirected to: ${url}` };
     }
 
-    // 7. Check cart badge count
+    // 7. Check cart badge count (expanded selectors)
     const cartBadgeSelectors = [
         '.cart-count',
         '.cart-item-count',
         '#cart-count',
         '[class*="cart-count"]',
         '[class*="cart-badge"]',
+        '[class*="cart-qty"]',
         '.header-cart .count',
+        '.cart-items-count',
+        '[data-cart-count]',
     ];
 
     for (const selector of cartBadgeSelectors) {
-        const badge = await page.$(selector);
-        if (badge) {
-            const text = await badge.textContent();
-            const count = parseInt(text, 10);
-            if (count > 0) {
-                return { success: true, method: 'badge', message: `Cart count: ${count}` };
+        try {
+            const badge = await page.$(selector);
+            if (badge) {
+                const text = await badge.textContent();
+                const count = parseInt(text, 10);
+                if (count > 0) {
+                    return { success: true, method: 'badge', message: `Cart count: ${count}` };
+                }
+                // Also check data attribute
+                const dataCount = await badge.getAttribute('data-cart-count').catch(() => null);
+                if (dataCount && parseInt(dataCount, 10) > 0) {
+                    return { success: true, method: 'badge_data', message: `Cart data-count: ${dataCount}` };
+                }
             }
-        }
+        } catch (e) { /* continue */ }
     }
 
     // 8. Check for generic success notification
@@ -279,7 +321,7 @@ async function verifyCart(page) {
  * Capture visual evidence right after Add to Cart.
  * Prioritize right-side popup/item summary area; fallback to viewport screenshot.
  */
-async function captureCartEvidence(page, outputDir, filenamePrefix = 'add_to_cart') {
+async function captureCartEvidence(page, outputDir, filenamePrefix = 'step_cart') {
     try {
         if (!outputDir) {
             return { captured: false, viewportPath: '', elementPath: '', selector: null, message: 'No output directory provided.' };
@@ -292,27 +334,27 @@ async function captureCartEvidence(page, outputDir, filenamePrefix = 'add_to_car
         const popupSelectors = [
             '[from="right"].mini-cart-drawer',
             '.mini-cart-drawer',
+            '.minicart-title',
+            '.all-item-in-cart',
+            '#sub-total-sidebar',
+            '.viewcart-button',
+            '.checkout-button',
             '.mini-cart-padding',
-            '.mini-cart-top',
-            '.mini-cart-action',
             '.item-summary',
-            '.item-box.list-add-item',
             '.item-summary-product',
             '[class*="cart-popup"]',
             '[class*="cart-drawer"]',
             '[class*="cart-notification"]',
-            '[class*="side-cart"]',
-            '[class*="mini-cart"]',
             '.added-to-cart-content',
         ];
 
-        const elementPath = path.join(outputDir, `${filenamePrefix}_element.png`);
+        const panelPath = path.join(outputDir, `${filenamePrefix}_panel.png`);
         const viewportPath = path.join(outputDir, `${filenamePrefix}_viewport.png`);
 
-        // Always capture viewport first as primary context
+        // Capture viewport context
         await page.screenshot({ path: viewportPath, fullPage: false });
 
-        let capturedElement = false;
+        let capturedPanel = false;
         let finalSelector = null;
 
         for (const selector of popupSelectors) {
@@ -321,10 +363,8 @@ async function captureCartEvidence(page, outputDir, filenamePrefix = 'add_to_car
                 if (el && await el.isVisible()) {
                     const box = await el.boundingBox().catch(() => null);
                     if (box && box.width >= 50 && box.height >= 50) {
-                        // Use page.screenshot with clip to capture the element PLUS its background
-                        // This prevents "transparent" PNGs when the element has no solid background
                         await page.screenshot({ 
-                            path: elementPath,
+                            path: panelPath,
                             clip: {
                                 x: Math.max(0, box.x),
                                 y: Math.max(0, box.y),
@@ -332,7 +372,7 @@ async function captureCartEvidence(page, outputDir, filenamePrefix = 'add_to_car
                                 height: box.height
                             }
                         });
-                        capturedElement = true;
+                        capturedPanel = true;
                         finalSelector = selector;
                         break;
                     }
@@ -344,27 +384,77 @@ async function captureCartEvidence(page, outputDir, filenamePrefix = 'add_to_car
 
         return {
             captured: true,
-            viewportPath,
-            elementPath: capturedElement ? elementPath : '',
+            viewport: viewportPath,
+            panel: capturedPanel ? panelPath : null,
             selector: finalSelector,
-            message: capturedElement 
-                ? `Captured viewport and element (${finalSelector})` 
-                : 'Captured viewport (no specific element found)'
+            message: capturedPanel 
+                ? `Captured viewport and panel (${finalSelector})` 
+                : 'Captured viewport context only.'
         };
     } catch (error) {
         return {
             captured: false,
-            viewportPath: '',
-            elementPath: '',
+            viewport: '',
+            panel: null,
             selector: null,
             message: `Failed to capture cart evidence: ${error.message}`,
         };
     }
 }
 
+/**
+ * Quick color similarity check between a cropped area and a reference thumbnail.
+ * Returns a score from 0 to 1.
+ */
+async function quickColorCheck(imagePath, diffMask, thumbUrl) {
+    if (!imagePath || !diffMask || diffMask.w <= 0 || diffMask.h <= 0 || !thumbUrl) return 0;
+    
+    try {
+        const sharp = require('sharp');
+        const axios = require('axios');
+
+        // Capture area of change from AFTER image
+        const cropBuffer = await sharp(imagePath)
+            .extract({
+                left: Math.max(0, Math.floor(diffMask.x)),
+                top: Math.max(0, Math.floor(diffMask.y)),
+                width: Math.max(1, Math.floor(diffMask.w)),
+                height: Math.max(1, Math.floor(diffMask.h))
+            })
+            .resize(10, 10, { fit: 'fill' }) // Normalize to small grid
+            .raw()
+            .toBuffer();
+
+        // Get thumbnail color
+        const thumbResponse = await axios.get(thumbUrl, { responseType: 'arraybuffer' });
+        const thumbBuffer = await sharp(thumbResponse.data)
+            .resize(10, 10, { fit: 'fill' })
+            .raw()
+            .toBuffer();
+
+        // Simple Euclidean distance between the two normalized 10x10 grids
+        let totalDiff = 0;
+        for (let i = 0; i < cropBuffer.length; i++) {
+            totalDiff += Math.abs(cropBuffer[i] - thumbBuffer[i]);
+        }
+        
+        const maxDiff = 10 * 10 * 3 * 255;
+        const similarity = 1 - (totalDiff / maxDiff);
+        
+        console.log(`      [COLOR] Similarity check: ${(similarity * 100).toFixed(1)}% match.`);
+        return similarity;
+    } catch (error) {
+        console.warn(`      [WARN] Color similarity check failed: ${error.message}`);
+        return 0;
+    }
+}
+
+
 module.exports = {
     validatePreviewImage,
     calculateVisualDiff,
+    calculateVisualDiffBuffers,
+    quickColorCheck,
     verifyCart,
     captureCartEvidence,
 };
