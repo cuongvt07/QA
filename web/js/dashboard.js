@@ -14,7 +14,7 @@
         testRuns: loadFromStorage('qa_test_runs') || [],
         currentPage: 'dashboard',
         searchQuery: '',
-        
+
         // Filters
         filters: {
             status: 'ALL',
@@ -32,7 +32,7 @@
             products: { page: 1, pageSize: 15 }
         },
 
-        // ✅ Track các test đang chạy
+        // âœ… Track cÃ¡c test Ä‘ang cháº¡y
         runningTests: new Map(), // testCaseId -> { runId, startTime }
         activeElements: new Map(), // testCaseId -> { buttonEl, progressEl, originalText }
     };
@@ -91,7 +91,7 @@
         const { runId, testCaseId, testName } = data;
         const runIdStr = String(runId || '');
         const testCaseKey = String(testCaseId || '');
-        
+
         if (testCaseId) {
             const tc = state.testCases.find(t => String(t.id) === testCaseKey);
             if (tc) {
@@ -119,7 +119,7 @@
                 _startTimestamp: Date.now()
             });
         }
-        
+
         saveToStorage('qa_test_runs', state.testRuns);
         saveToStorage('qa_test_cases', state.testCases);
 
@@ -131,8 +131,8 @@
         const { runId, testCaseId, testName } = data;
         const runIdStr = String(runId || '');
         const testCaseKey = String(testCaseId || '');
-        
-        // Cập nhật state nếu cần
+
+        // Cáº­p nháº­t state náº¿u cáº§n
         if (testCaseId) {
             const tc = state.testCases.find(t => String(t.id) === testCaseKey);
             if (tc) {
@@ -142,7 +142,7 @@
             }
         }
 
-        // Cập nhật hoặc tạo run
+        // Cáº­p nháº­t hoáº·c táº¡o run
         const existingRun = state.testRuns.find(r => String(r.id) === runIdStr);
         if (existingRun) {
             existingRun.status = 'RUNNING';
@@ -164,11 +164,11 @@
         }
 
         state.runningTests.set(testCaseKey || runIdStr, { runId: runIdStr || runId, startTime: Date.now() });
-        
+
         saveToStorage('qa_test_runs', state.testRuns);
         saveToStorage('qa_test_cases', state.testCases);
 
-        // Render lại UI
+        // Render láº¡i UI
         if (state.currentPage === 'dashboard') renderDashboard();
         if (state.currentPage === 'test-cases') renderTestCases();
     }
@@ -180,11 +180,11 @@
         const stateKey = testCaseKey || runIdStr;
         const terminalStatus = normalizeRunStatus(status);
         const isBusinessStatus = ['PASS', 'FAIL', 'FATAL', 'REVIEW'].includes(terminalStatus);
-        
+
         state.runningTests.delete(stateKey);
         if (runIdStr) state.runningTests.delete(runIdStr);
 
-        // Dọn dẹp UI nếu có lưu trong Map
+        // Dá»n dáº¹p UI náº¿u cÃ³ lÆ°u trong Map
         const elements = state.activeElements.get(stateKey) || state.activeElements.get(runIdStr);
         if (elements) {
             if (elements.progressEl) elements.progressEl.remove();
@@ -214,7 +214,7 @@
             delete existingRun._startTimestamp;
         }
 
-        // Cập nhật trạng thái test case
+        // Cáº­p nháº­t tráº¡ng thÃ¡i test case
         if (testCaseId) {
             const tc = state.testCases.find(t => String(t.id) === testCaseKey);
             if (tc) {
@@ -228,10 +228,10 @@
         saveToStorage('qa_test_runs', state.testRuns);
         saveToStorage('qa_test_cases', state.testCases);
 
-        // Fetch detail của run này để lấy đầy đủ info
+        // Fetch detail cá»§a run nÃ y Ä‘á»ƒ láº¥y Ä‘áº§y Ä‘á»§ info
         await fetchRunDetailById(runId);
 
-        // Render lại UI
+        // Render láº¡i UI
         if (state.currentPage === 'dashboard') renderDashboard();
         if (state.currentPage === 'test-cases') renderTestCases();
         if (state.currentPage === 'history') renderHistory();
@@ -250,14 +250,14 @@
     function initFilters() {
         const statusFilter = $('#filter-status');
         const dateFilter = $('#filter-date');
-        
+
         if (statusFilter) {
             statusFilter.addEventListener('change', (e) => {
                 state.filters.status = e.target.value;
                 refreshCurrentPage();
             });
         }
-        
+
         if (dateFilter) {
             dateFilter.addEventListener('change', (e) => {
                 state.filters.date = e.target.value;
@@ -355,16 +355,16 @@
         };
         pageTitle.textContent = titles[pageName] || 'Dashboard';
 
-        // ✅ CHỈ sync khi chuyển đến trang cần dữ liệu MỚI
-        // KHÔNG sync khi người dùng đang ở trang đó và test đang chạy
+        // âœ… CHá»ˆ sync khi chuyá»ƒn Ä‘áº¿n trang cáº§n dá»¯ liá»‡u Má»šI
+        // KHÃ”NG sync khi ngÆ°á»i dÃ¹ng Ä‘ang á»Ÿ trang Ä‘Ã³ vÃ  test Ä‘ang cháº¡y
         const needsSync = (pageName === 'dashboard' || pageName === 'test-cases' || pageName === 'history');
         const hasRunningTests = state.runningTests.size > 0;
 
         if (needsSync && !hasRunningTests) {
-            // Chỉ sync nếu KHÔNG có test nào đang chạy
+            // Chá»‰ sync náº¿u KHÃ”NG cÃ³ test nÃ o Ä‘ang cháº¡y
             syncAllFromApi({ render: true });
         } else if (needsSync) {
-            // Nếu có test đang chạy, chỉ render lại với data hiện có
+            // Náº¿u cÃ³ test Ä‘ang cháº¡y, chá»‰ render láº¡i vá»›i data hiá»‡n cÃ³
             if (pageName === 'dashboard') renderDashboard();
             else if (pageName === 'test-cases') renderTestCases();
             else if (pageName === 'history') renderHistory();
@@ -398,10 +398,10 @@
         const url = $('#input-product-url').value.trim();
 
         if (!url) {
-            await showPopup({ 
-                title: 'Invalid Input', 
+            await showPopup({
+                title: 'Invalid Input',
                 message: 'Please enter a Product URL.',
-                okText: 'Understood' 
+                okText: 'Understood'
             });
             return;
         }
@@ -422,8 +422,8 @@
             closeNewTestModal();
             switchPage('test-cases');
         } catch (error) {
-            await showPopup({ 
-                title: 'Creation Failed', 
+            await showPopup({
+                title: 'Creation Failed',
                 message: 'Create test case failed: ' + error.message,
                 okText: 'Dismiss'
             });
@@ -554,9 +554,9 @@
                     const report = JSON.parse(ev.target.result);
                     importReport(report);
                 } catch (err) {
-                    showPopup({ 
-                        title: 'Import Error', 
-                        message: 'Invalid JSON file: ' + err.message 
+                    showPopup({
+                        title: 'Import Error',
+                        message: 'Invalid JSON file: ' + err.message
                     });
                 }
             };
@@ -595,9 +595,9 @@
         state.testRuns.push(run);
         saveToStorage('qa_test_runs', state.testRuns);
         renderDashboard();
-        showPopup({ 
-            title: 'Import Success', 
-            message: `<b>Imported:</b> ${escapeHtml(run.name)} (${run.total_steps} steps)` 
+        showPopup({
+            title: 'Import Success',
+            message: `<b>Imported:</b> ${escapeHtml(run.name)} (${run.total_steps} steps)`
         });
     }
 
@@ -670,7 +670,7 @@
                 e.stopPropagation();
                 const tcId = btn.dataset.tcId;
                 let tc = state.testCases.find(t => String(t.id) === String(tcId));
-                
+
                 if (!tc && btn.closest('.run-card')) {
                     const runId = btn.closest('.run-card').dataset.runId;
                     const run = state.testRuns.find(r => r.id === runId);
@@ -679,7 +679,7 @@
                         if (!tc && run.name && (run.url || run.product_url)) tc = state.testCases.find(t => t.name === run.name && t.url === (run.url || run.product_url));
                     }
                 }
-                
+
                 if (tc) {
                     const isHeadless = $('#checkbox-headless') ? $('#checkbox-headless').checked : true;
                     const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
@@ -713,10 +713,10 @@
         const urlLabel = escapeHtml(run.product_url || run.url || '');
         const timeStr = formatTime(getRunTimeIso(run));
         const scoreValue = Number(run.score);
-        
+
         return `
         <div class="run-card glass-panel" data-run-id="${run.id}" style="margin-bottom:8px; cursor:pointer; padding:12px 16px; display:flex; justify-content:space-between; align-items:center; gap:16px; transition: all 0.2s ease;">
-            <!-- Khối trái (Left block) - Thông tin -->
+            <!-- Khá»‘i trÃ¡i (Left block) - ThÃ´ng tin -->
             <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:4px;">
                 <div style="display:flex; align-items:center; gap:8px;">
                     <h3 style="margin:0; font-size:1rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${tcLabel}">${tcLabel}</h3>
@@ -725,7 +725,7 @@
                 ${urlLabel ? `<div style="font-size:0.8rem; color:var(--accent-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${urlLabel}">${urlLabel}</div>` : ''}
             </div>
 
-            <!-- Khối phải (Right block) - Thông số & Hành động -->
+            <!-- Khá»‘i pháº£i (Right block) - ThÃ´ng sá»‘ & HÃ nh Ä‘á»™ng -->
             <div style="display:flex; align-items:center; gap:16px; flex-shrink:0;">
                 <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px; font-size:0.8rem; color:var(--text-secondary);">
                     <div><strong style="color:var(--text-primary)">${Number.isFinite(scoreValue) ? scoreValue : '-'}</strong> pts &bull; <strong>${run.total_steps || 0}</strong> stp</div>
@@ -816,12 +816,12 @@
                     return tcCode && (r.tc_code === tcCode || r.report_code === tcCode);
                 })
                 .sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a))[0] || {};
-            
+
             const isBusinessStatus = (s) => ['PASS', 'FAIL', 'FATAL', 'REVIEW'].includes(String(s || '').toUpperCase());
-            
+
             let execStatus = tc.execution_status || 'READY';
             let resStatus = isBusinessStatus(tc.status) ? tc.status : (tc.result_status || '');
-            
+
             if (lastRun && lastRun.id) {
                 execStatus = lastRun.execution_status || (normalizeRunStatus(lastRun.status) === 'RUNNING' ? 'RUNNING' : 'FINISHED');
                 resStatus = lastRun.result_status || (isBusinessStatus(lastRun.status) ? lastRun.status : resStatus);
@@ -841,15 +841,15 @@
                 resBadge = '-';
             } else {
                 execBadge = `<span class="badge badge-${execClass}">${execStatus || 'READY'}</span>`;
-                
+
                 if (resStatus && isBusinessStatus(resStatus)) {
                     let resContent = resStatus;
-                    
+
                     // Add score with Raw Score if available
                     if (typeof lastRun.score === 'number') {
                         const rawScore = lastRun.raw_score || lastRun.score;
                         const hasOverride = rawScore !== lastRun.score;
-                        
+
                         resContent += ` <span class="score-container">
                             ${hasOverride ? `<span class="score-raw" title="Raw Score before override">${rawScore}</span>` : ''}
                             <span style="opacity:0.8; font-weight:700;">${lastRun.score}</span>
@@ -860,14 +860,14 @@
                     if (typeof lastRun.total_cases === 'number' && lastRun.total_cases > 0) {
                         resContent += ` <span style="opacity:0.6; font-size:0.75rem;">(${lastRun.passed_cases}/${lastRun.total_cases})</span>`;
                     }
-                    
+
                     resBadge = `
                         <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                             <span class="badge badge-${resClass}">${resContent}</span>
                             ${lastRun.decision ? `<span class="badge-decision">${lastRun.decision}</span>` : ''}
                             ${lastRun.confidence_score ? `<span class="badge-decision-sub" style="font-size: 10px; opacity: 0.7;">Confidence: ${Math.round(lastRun.confidence_score * 100)}%</span>` : ''}
                         </div>`;
-                    
+
                     // Render Reasons
                     const codes = lastRun.reason_codes || lastRun.decision_reason_codes || [];
                     if (codes.length > 0) {
@@ -892,9 +892,9 @@
                 <td>
                     <div class="table-actions">
                         ${(lastRun && lastRun.id)
-                        ? `<button class="btn-primary btn-xs btn-view" data-run-id="${lastRun.id}">Report</button>
+                    ? `<button class="btn-primary btn-xs btn-view" data-run-id="${lastRun.id}">Report</button>
                                <button class="btn-ghost btn-xs btn-rerun" data-tc-id="${tc.id}" data-report-code="${escapeHtml(lastRun.report_code || lastRun.tc_code || tc.tc_code || '')}">Run</button>`
-                        : `<button class="btn-primary btn-xs btn-rerun" data-tc-id="${tc.id}" data-report-code="${escapeHtml(tc.tc_code || tc.name || '')}">Run</button>`}
+                    : `<button class="btn-primary btn-xs btn-rerun" data-tc-id="${tc.id}" data-report-code="${escapeHtml(tc.tc_code || tc.name || '')}">Run</button>`}
                         <button class="btn-ghost btn-xs btn-delete" data-tc-id="${tc.id}" style="color: var(--accent-danger);">Delete</button>
                     </div>
                 </td>
@@ -1051,17 +1051,17 @@
         const isV2 = run.decision && typeof run.quality_score !== 'undefined';
         const uiTitle = isV2 ? run.decision : run.status;
         const statusMeta = getUiStatusMeta(uiTitle);
-        
+
         // Main score display (Quality Score for V2, Legacy Score for V1)
         const mainScoreValue = isV2 ? run.quality_score : Number(run.score);
         const mainScoreLabel = isV2 ? 'Quality Score' : 'Score';
-        
+
         // Confidence Score Display (V2 only)
         let confidenceHtml = '';
         if (isV2) {
             const cScore = (run.confidence_score * 100).toFixed(0);
             const cClass = run.confidence_score >= 0.85 ? 'var(--accent-success)' : (run.confidence_score >= 0.6 ? 'var(--accent-warning)' : 'var(--accent-danger)');
-            
+
             // Build tooltip for signal detail breakdown
             let signalTooltip = 'Confidence Details:\n';
             if (run.signal_detail) {
@@ -1070,7 +1070,7 @@
                 signalTooltip += `- Stability: ${(run.signal_detail.stability * 100).toFixed(0)}%\n`;
                 signalTooltip += `- Pipeline: ${(run.signal_detail.pipeline_health * 100).toFixed(0)}%`;
             }
-            
+
             confidenceHtml = `<span style="font-size:1rem;font-weight:600;color:${cClass};" title="${signalTooltip}">Confidence: ${cScore}%</span>`;
         }
 
@@ -1209,7 +1209,7 @@
             const isV2 = !!step.step_verdict;
             const isLifecycle = step.group_type === 'lifecycle';
             const uiStatus = isLifecycle ? step.status : (isV2 ? step.step_verdict : step.status);
-            
+
             let stepClass = 'fail';
             if (uiStatus === 'PASS') stepClass = 'pass';
             else if (uiStatus === 'SKIPPED') stepClass = 'skip';
@@ -1227,7 +1227,7 @@
                     <div class="step-content">
                         <div class="step-header">
                             <div class="step-title-area">
-                                <span class="step-label">HÀNH ĐỘNG ${step.step_id}</span>
+                                <span class="step-label">HÃ€NH Äá»˜NG ${step.step_id}</span>
                                 <h4 class="step-action-title">${escapeHtml(label)}</h4>
                             </div>
                             <span class="badge badge-${stepClass}">${uiStatus}</span>
@@ -1248,18 +1248,18 @@
                             ${step.cart_evidence.panel ? `
                             <div class="step-img-container" style="max-width:320px; flex:0 0 auto;">
                                 <img src="${escapeHtml(step.cart_evidence.panel)}" alt="Cart Panel">
-                                <div class="step-img-label">GIỎ HÀNG (PANEL)</div>
+                                <div class="step-img-label">GIá»Ž HÃ€NG (PANEL)</div>
                             </div>` : ''}
                             <div class="step-img-container" style="max-width:320px; flex:0 0 auto;">
                                 <img src="${escapeHtml(step.cart_evidence.viewport)}" alt="Viewport Context">
-                                <div class="step-img-label">BỐI CẢNH (VIEWPORT)</div>
+                                <div class="step-img-label">Bá»I Cáº¢NH (VIEWPORT)</div>
                             </div>
                         </div>`
                         : (step.state_after
                             ? `<div class="step-images" style="margin-top:10px;">
                                 <div class="step-img-container" style="max-width:400px;">
                                     <img src="${escapeHtml(step.state_after)}" alt="Evidence">
-                                    <div class="step-img-label">KẾT QUẢ</div>
+                                    <div class="step-img-label">Káº¾T QUáº¢</div>
                                 </div>
                             </div>`
                             : '')}
@@ -1294,40 +1294,40 @@
                     <div class="step-content">
                         <div class="step-header">
                             <div class="step-title-area">
-                                <span class="step-label">HÀNH ĐỘNG ${step.step_id}</span>
+                                <span class="step-label">HÃ€NH Äá»˜NG ${step.step_id}</span>
                                 <h4 class="step-action-title">${escapeHtml(step.action)}: <span class="step-name">${escapeHtml(step.name)}</span></h4>
                             </div>
                             <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
                                 ${step.interaction_status ? `<span class="badge badge-${step.interaction_status.toLowerCase() === 'pass' ? 'pass' : 'fail'}" title="Interaction Status">ACT: ${step.interaction_status}</span>` : ''}
-                                ${step.validation_status ? `<span class="badge badge-${['PASS','FAIL','WARNING'].includes(step.validation_status) ? step.validation_status.toLowerCase() : 'warning'}" title="Validation Status">VAL: ${step.validation_status}</span>` : ''}
+                                ${step.validation_status ? `<span class="badge badge-${['PASS', 'FAIL', 'WARNING'].includes(step.validation_status) ? step.validation_status.toLowerCase() : 'warning'}" title="Validation Status">VAL: ${step.validation_status}</span>` : ''}
                                 <span class="badge badge-${stepClass}" title="Final Step Status">${uiStatus}</span>
                             </div>
                         </div>
                         
                         <div class="step-selection-row">
                             ${thumbHtml}
-                            <span class="step-val-label">Lựa chọn: <span class="step-val-badge">${escapeHtml(step.value_chosen || '')}</span></span>
+                            <span class="step-val-label">Lá»±a chá»n: <span class="step-val-badge">${escapeHtml(step.value_chosen || '')}</span></span>
                             ${colorMetaHtml}
                             
                             ${isV2 ? (
-                                `<div style="display:inline-flex;gap:8px;margin-left:auto;">
+                    `<div style="display:inline-flex;gap:8px;margin-left:auto;">
                                     ${step.signals?.diff?.availability === 'AVAILABLE' ? `<span class="step-diff" title="Visual Diff">Diff: ${step.signals.diff.score}%</span>` : `<span class="step-diff" style="color:var(--text-muted);border-color:rgba(255,255,255,0.1)">Diff: N/A</span>`}
                                     ${step.signals?.color?.availability === 'AVAILABLE' ? `<span class="step-diff" title="Color Verification">Color: ${step.signals.color.result}</span>` : ''}
                                     ${step.signals?.temporal_impact?.severity && step.signals.temporal_impact.severity !== 'NONE' ? `<span class="step-diff" style="color:var(--accent-danger);border-color:var(--accent-danger)" title="Temporal Shift">Temp: ${step.signals.temporal_impact.severity}</span>` : `<span class="step-diff" style="color:var(--accent-success);opacity:0.6" title="Temporal Shift">Stable</span>`}
                                  </div>`
-                            ) : (
-                                // Legacy fallback
-                                `${step.code_evaluation && step.code_evaluation.diff_score >= 0
-                                    ? `<span class="step-diff" title="Pixelmatch">Audit Code: ${step.code_evaluation.diff_score}%</span>`
-                                    : (step.diff_score >= 0 ? `<span class="step-diff">Độ lệch: ${step.diff_score}%</span>` : '')}`
-                            )}
+                ) : (
+                    // Legacy fallback
+                    `${step.code_evaluation && step.code_evaluation.diff_score >= 0
+                        ? `<span class="step-diff" title="Pixelmatch">Audit Code: ${step.code_evaluation.diff_score}%</span>`
+                        : (step.diff_score >= 0 ? `<span class="step-diff">Äá»™ lá»‡ch: ${step.diff_score}%</span>` : '')}`
+                )}
                         </div>
 
                         ${step.state_before || step.state_after
                     ? `<div class="step-images">
                                 <div class="step-img-container">
                                     ${step.state_before ? `<img src="${escapeHtml(step.state_before)}" alt="Before">` : '<div style="height:80px;display:flex;align-items:center;justify-content:center;color:var(--text-muted)">N/A</div>'}
-                                    <div class="step-img-label">TRƯỚC KHI</div>
+                                    <div class="step-img-label">TRÆ¯á»šC KHI</div>
                                 </div>
                                 <div class="step-arrow-section">
                                     ${step.option_thumbnail
@@ -1338,7 +1338,7 @@
                             ? `<div class="step-option-preview">
                                                 <div style="width:40px;height:40px;border-radius:50%;border:2px solid var(--accent-primary);background:${safeColorHex};margin:0 auto;"></div>
                                             </div>`
-                            : '<div class="step-arrow">→</div>')}
+                            : '<div class="step-arrow">â†’</div>')}
                                 </div>
                                 <div class="step-img-container">
                                     ${step.state_after ? `<img src="${escapeHtml(step.state_after)}" alt="After">` : '<div style="height:80px;display:flex;align-items:center;justify-content:center;color:var(--text-muted)">N/A</div>'}
@@ -1368,13 +1368,13 @@
                         
                         <div class="step-meta-grid" style="margin-top:15px; display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
                             <div class="meta-item" style="padding:8px 12px; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.03);">
-                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">AI Kiểm Định</span>
+                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">AI Kiá»ƒm Äá»‹nh</span>
                                 <span class="meta-value" style="font-size:0.85rem; font-weight:600; color:${step.ai_evaluation?.ai_verdict === 'PASS' ? 'var(--accent-success)' : 'var(--text-muted)'}">
                                     ${step.ai_evaluation?.ai_verdict || 'N/A'}
                                 </span>
                             </div>
                             <div class="meta-item" style="padding:8px 12px; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.03);">
-                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">Mã Audit</span>
+                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">MÃ£ Audit</span>
                                 <span class="meta-value" style="font-size:0.85rem; font-weight:600;">${step.code_evaluation?.status || 'N/A'}</span>
                             </div>
                         </div>
@@ -1437,10 +1437,10 @@
                 const rawVal = r.value;
                 const isUndef = typeof rawVal === 'undefined' || rawVal === null;
                 const display = isUndef ? '-' : (r.isBase || r.isScore ? rawVal : (rawVal === 0 ? '0' : String(rawVal)));
-                
+
                 let statusIcon = '';
                 let valColor = 'var(--text-primary)';
-                
+
                 if (r.isScore) {
                     statusIcon = '';
                     valColor = isUndef ? 'var(--text-muted)' : r.color;
@@ -1448,7 +1448,7 @@
                     statusIcon = r.isBase ? '' : (isUndef ? '-' : (rawVal === 0 ? 'OK' : 'X'));
                     valColor = r.isBase ? r.color : (isUndef ? 'var(--text-muted)' : (rawVal === 0 ? 'var(--accent-success)' : r.color));
                 }
-                
+
                 rowsHtml += `
                 <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
                     <td style="padding:6px 12px; font-size:0.85rem; color:var(--text-secondary);">${statusIcon ? statusIcon + ' ' : ''}${r.label}</td>
@@ -1617,8 +1617,8 @@
                         </h4>
                         <ul style="margin:0; padding-left:18px; font-size:0.85rem; color:var(--text-secondary); line-height:1.5;">
                             ${(aiReview.issues || []).length > 0
-                                ? (aiReview.issues || []).map(i => `<li>${escapeHtml(i)}</li>`).join('')
-                                : '<li style="list-style:none; margin-left:-18px; color:var(--text-muted); font-style:italic;">No issues found.</li>'}
+                    ? (aiReview.issues || []).map(i => `<li>${escapeHtml(i)}</li>`).join('')
+                    : '<li style="list-style:none; margin-left:-18px; color:var(--text-muted); font-style:italic;">No issues found.</li>'}
                         </ul>
                     </div>
                 </div>
@@ -1628,25 +1628,25 @@
                     <div style="padding:10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05);">
                         <div style="color:var(--text-muted); font-size:0.65rem; text-transform:uppercase; margin-bottom:8px; font-weight:700;">Layout</div>
                         <ul style="margin:0; padding-left:14px; color:var(--text-secondary); line-height:1.4;">
-                            ${(aiReview.layout_notes || []).length > 0 
-                                ? aiReview.layout_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('') 
-                                : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
+                            ${(aiReview.layout_notes || []).length > 0
+                    ? aiReview.layout_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')
+                    : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
                         </ul>
                     </div>
                     <div style="padding:10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05);">
                         <div style="color:var(--text-muted); font-size:0.65rem; text-transform:uppercase; margin-bottom:8px; font-weight:700;">Colors</div>
                         <ul style="margin:0; padding-left:14px; color:var(--text-secondary); line-height:1.4;">
-                            ${(aiReview.color_notes || []).length > 0 
-                                ? aiReview.color_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('') 
-                                : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
+                            ${(aiReview.color_notes || []).length > 0
+                    ? aiReview.color_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')
+                    : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
                         </ul>
                     </div>
                     <div style="padding:10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05);">
                         <div style="color:var(--text-muted); font-size:0.65rem; text-transform:uppercase; margin-bottom:8px; font-weight:700;">Content</div>
                         <ul style="margin:0; padding-left:14px; color:var(--text-secondary); line-height:1.4;">
-                            ${(aiReview.content_notes || []).length > 0 
-                                ? aiReview.content_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('') 
-                                : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
+                            ${(aiReview.content_notes || []).length > 0
+                    ? aiReview.content_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')
+                    : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
                         </ul>
                     </div>
                 </div>
@@ -1685,8 +1685,8 @@
                 </h4>
                 <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px;">
                     ${aiReview.detected_elements.map(el => {
-                        const statusColor = el.match ? 'var(--accent-success)' : 'var(--accent-danger)';
-                        return `
+            const statusColor = el.match ? 'var(--accent-success)' : 'var(--accent-danger)';
+            return `
                             <div style="background: rgba(0,0,0,0.15); padding:10px; border-radius:8px; border-top: 3px solid ${statusColor}; display:flex; flex-direction:column; gap:6px;">
                                 <div style="font-size:0.7rem; color:var(--text-muted); font-weight:700; line-height:1.2; text-transform:uppercase;">
                                     ${escapeHtml(el.field || 'Field')}
@@ -1695,7 +1695,7 @@
                                 <div style="font-size:0.8rem; font-weight:600; color:${statusColor}">Det: ${escapeHtml(String(el.detected || 'N/A'))}</div>
                             </div>
                         `;
-                    }).join('')}
+        }).join('')}
                 </div>
             </div>` : ''}
 
@@ -1749,7 +1749,7 @@
     // Load settings on init
     async function loadSettings() {
         const local = loadFromStorage('qa_settings') || {};
-        
+
         // Try to fetch from server as primary source
         try {
             const res = await fetch('/api/settings');
@@ -1760,6 +1760,12 @@
 
                 if (s.headless) $('#setting-headless').value = s.headless;
                 else if (local.headless) $('#setting-headless').value = local.headless;
+
+                if (s.DAILY_NEW_TC_LIMIT !== undefined) {
+                    $('#setting-daily-new-limit').value = s.DAILY_NEW_TC_LIMIT;
+                } else if (local.DAILY_NEW_TC_LIMIT) {
+                    $('#setting-daily-new-limit').value = local.DAILY_NEW_TC_LIMIT;
+                }
 
                 // New Auto-Pass settings
                 if (s.DIFF_AUTO_PASS_ZERO !== undefined) {
@@ -1774,6 +1780,11 @@
                     $('#setting-custom-image-preview').style.display = 'block';
                     $('#setting-custom-image-preview').querySelector('img').src = `/images/${fname}?t=${Date.now()}`;
                 }
+
+                if (s.DAILY_REPORT_TIME !== undefined) $('#setting-daily-report-time').value = s.DAILY_REPORT_TIME;
+                if (s.DAILY_REPORT_TO !== undefined) $('#setting-daily-report-to').value = s.DAILY_REPORT_TO;
+                if (s.DAILY_REPORT_CC !== undefined) $('#setting-daily-report-cc').value = s.DAILY_REPORT_CC;
+
                 return;
             }
         } catch (e) {
@@ -1783,6 +1794,12 @@
         // Fallback to local storage
         if (local.timeout) $('#setting-timeout').value = local.timeout;
         if (local.headless) $('#setting-headless').value = local.headless;
+        if (local.DAILY_NEW_TC_LIMIT) $('#setting-daily-new-limit').value = local.DAILY_NEW_TC_LIMIT;
+        
+        if (local.DAILY_REPORT_TIME !== undefined) $('#setting-daily-report-time').value = local.DAILY_REPORT_TIME;
+        if (local.DAILY_REPORT_TO !== undefined) $('#setting-daily-report-to').value = local.DAILY_REPORT_TO;
+        if (local.DAILY_REPORT_CC !== undefined) $('#setting-daily-report-cc').value = local.DAILY_REPORT_CC;
+
         if (local.customImageFilename) {
             $('#setting-custom-image-preview').style.display = 'block';
             $('#setting-custom-image-preview').querySelector('img').src = `/images/${local.customImageFilename}?t=${Date.now()}`;
@@ -1806,17 +1823,22 @@
     $('#btn-save-settings').addEventListener('click', async () => {
         const timeout = $('#setting-timeout').value;
         const headless = $('#setting-headless').value;
+        const dailyNewLimit = $('#setting-daily-new-limit').value;
         const autoPassZero = $('#setting-auto-pass-zero').checked;
         const autoPassHigh = $('#setting-auto-pass-high').value;
-        
+
         const btn = $('#btn-save-settings');
         const ogText = btn.innerHTML;
 
-        const settingsToSave = { 
-            timeout, 
+        const settingsToSave = {
+            timeout,
             headless,
+            DAILY_NEW_TC_LIMIT: String(dailyNewLimit),
             DIFF_AUTO_PASS_ZERO: String(autoPassZero),
-            DIFF_AUTO_PASS_HIGH: String(autoPassHigh)
+            DIFF_AUTO_PASS_HIGH: String(autoPassHigh),
+            DAILY_REPORT_TIME: $('#setting-daily-report-time').value,
+            DAILY_REPORT_TO: $('#setting-daily-report-to').value,
+            DAILY_REPORT_CC: $('#setting-daily-report-cc').value
         };
 
         // Handle custom image upload
@@ -1882,6 +1904,57 @@
         fileInput.value = '';
     });
 
+    const btnRunDailyNew = $('#btn-run-daily-new');
+    if (btnRunDailyNew) {
+        btnRunDailyNew.addEventListener('click', async () => {
+            const limit = Number.parseInt($('#setting-daily-new-limit')?.value || '20', 10) || 20;
+            const headless = $('#setting-headless') ? $('#setting-headless').value !== 'false' : true;
+            const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
+            const currentSettings = loadFromStorage('qa_settings') || {};
+            const customImageFilename = currentSettings.customImageFilename || undefined;
+
+            const confirmed = await showPopup({
+                title: 'Queue Daily New Run',
+                message: `Queue toi da <b>${limit}</b> test case moi chua tung chay?<br><br>Server queue hien tai se xu ly theo hang doi, mac dinh 5 TC chay cung luc.`,
+                okText: 'Queue Now',
+                cancelText: 'Cancel',
+                isConfirm: true
+            });
+            if (!confirmed) return;
+
+            const originalHtml = btnRunDailyNew.innerHTML;
+            btnRunDailyNew.disabled = true;
+            btnRunDailyNew.innerHTML = '<span class="loading-spinner"></span> Queueing...';
+
+            try {
+                const res = await fetch('/api/batches/daily-new', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        limit,
+                        headless,
+                        useAi,
+                        customImageFilename
+                    })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+                await syncAllFromApi({ render: true, includeReports: false });
+                await showPopup({
+                    title: 'Daily Batch Queued',
+                    message: `Da queue <b>${data.queuedCount || 0}</b>/<b>${data.selectedCount || 0}</b> TC moi.<br>Batch ID: <code>${escapeHtml(data.batchId || '-')}</code><br>Queue concurrency: <b>${data.queueConcurrency || 5}</b>`
+                });
+            } catch (err) {
+                console.error('Daily new batch failed:', err);
+                await showPopup({ title: 'Batch Failed', message: 'Khong the queue daily batch: ' + err.message });
+            } finally {
+                btnRunDailyNew.disabled = false;
+                btnRunDailyNew.innerHTML = originalHtml;
+            }
+        });
+    }
+
     // ============================================================
     // API INTEGRATION: Trigger Backend Engine
     // ============================================================
@@ -1890,11 +1963,11 @@
 
         const testCaseId = String(testCase.id || testCase.url);
 
-        // ✅ 1. Ngăn chặn chạy trùng
+        // âœ… 1. NgÄƒn cháº·n cháº¡y trÃ¹ng
         if (state.runningTests.has(testCaseId)) {
-            await showPopup({ 
-                title: 'Busy', 
-                message: 'Test case này đang chạy! Vui lòng đợi hoàn thành.' 
+            await showPopup({
+                title: 'Busy',
+                message: 'Test case nÃ y Ä‘ang cháº¡y! Vui lÃ²ng Ä‘á»£i hoÃ n thÃ nh.'
             });
             return;
         }
@@ -1903,12 +1976,12 @@
         buttonEl.innerHTML = '<span class="loading-spinner"></span> Running...';
         buttonEl.disabled = true;
 
-        // ✅ 2. Cập nhật trạng thái LOCAL - KHÔNG sync toàn bộ
+        // âœ… 2. Cáº­p nháº­t tráº¡ng thÃ¡i LOCAL - KHÃ”NG sync toÃ n bá»™
         testCase.status = 'RUNNING';
         testCase._startTimestamp = Date.now();
         saveToStorage('qa_test_cases', state.testCases);
 
-        // ✅ 3. Chỉ re-render Test Cases page (nhanh hơn nhiều)
+        // âœ… 3. Chá»‰ re-render Test Cases page (nhanh hÆ¡n nhiá»u)
         if (state.currentPage === 'test-cases') {
             renderTestCases();
         }
@@ -1940,7 +2013,7 @@
 
             const { runId } = await res.json();
 
-            // ✅ 4. Tạo run object cục bộ ngay lập tức
+            // âœ… 4. Táº¡o run object cá»¥c bá»™ ngay láº­p tá»©c
             const newRun = {
                 id: runId,
                 test_case_id: testCase.id,
@@ -1961,7 +2034,7 @@
             // Re-render nhanh
             if (state.currentPage === 'dashboard') renderDashboard();
 
-            // ✅ 5. Lưu element để SSE dọn dẹp sau này
+            // âœ… 5. LÆ°u element Ä‘á»ƒ SSE dá»n dáº¹p sau nÃ y
             state.activeElements.set(testCaseId, {
                 buttonEl,
                 progressEl,
@@ -1973,7 +2046,7 @@
         }
     }
 
-    // ✅ Hàm tạo progress element
+    // âœ… HÃ m táº¡o progress element
     function createProgressElement(tcCard, isHeadless, useAi) {
         if (!tcCard) return null;
 
@@ -2017,197 +2090,325 @@
         try {
             const selectedIds = new Set(Array.from(state.selectedTestCases).map(String));
             if (selectedIds.size === 0) {
-                showPopup({ title: 'No Selection', message: 'Hãy tick TC ở All Test Cases trước khi export.' });
+                showPopup({ title: 'No Selection', message: 'Hay tick TC o All Test Cases truoc khi export.' });
                 return;
             }
 
-            // Helper for mapping across multiple cases in a run
-            const joinCases = (arr, picker) =>
-                (arr || []).map((c, i) => {
-                    const ai = c?.final_evaluation?.ai_review || {};
-                    const v = picker(ai);
-                    return v ? `Case ${i + 1}: ${v}` : null;
-                }).filter(Boolean).join('\n');
-
-            // 1. Summary Data
-            const summaryHeaders = [
-                'TC ID', 'Name', 'Product URL', 'Execution Status', 'Result Status', 
-                'Decision', 'Reason Codes', 'Raw Score', 'Final Score', 'Confidence',
-                'Last Run Time', 'TC Code',
-                'AI Visual Perception (Raw)', 'Strengths', 'Layout', 'Colors', 'Content',
-                'Main Reason (Deduction)'
-            ];
-            const selectedCases = state.testCases.filter(tc => selectedIds.has(String(tc.id)));
-            const summaryRows = selectedCases.map(tc => {
-                const lastRun = state.testRuns
-                    .filter(r => (String(r.test_case_id) === String(tc.id) || r.tc_code === tc.tc_code))
-                    .sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a))[0];
-                
-                return [
-                    tc.id,
-                    tc.name,
-                    tc.url,
-                    tc.execution_status || (tc.status === 'QUEUED' || tc.status === 'RUNNING' ? tc.status : 'FINISHED'),
-                    tc.result_status || (tc.status !== 'QUEUED' && tc.status !== 'RUNNING' ? tc.status : ''),
-                    lastRun ? (lastRun.decision || '') : '',
-                    lastRun ? (Array.isArray(lastRun.reason_codes) ? lastRun.reason_codes.join('; ') : lastRun.reason_codes || '') : '',
-                    lastRun ? (lastRun.raw_score || 0) : 0,
-                    lastRun ? (lastRun.score || 0) : 0,
-                    lastRun ? `${Math.round((lastRun.confidence_score || 1.0) * 100)}%` : '',
-                    lastRun ? (lastRun.test_time || lastRun.started_at || '') : '',
-                    tc.tc_code || '',
-                    lastRun ? joinCases(lastRun.cases, ai => ai.raw_image_description) : '',
-                    lastRun ? joinCases(lastRun.cases, ai => Array.isArray(ai.strengths) ? ai.strengths.join('; ') : ai.strengths) : '',
-                    lastRun ? joinCases(lastRun.cases, ai => Array.isArray(ai.layout_notes) ? ai.layout_notes.join('; ') : ai.layout_notes) : '',
-                    lastRun ? joinCases(lastRun.cases, ai => Array.isArray(ai.color_notes) ? ai.color_notes.join('; ') : ai.color_notes) : '',
-                    lastRun ? joinCases(lastRun.cases, ai => Array.isArray(ai.content_notes) ? ai.content_notes.join('; ') : ai.content_notes) : '',
-                    lastRun ? (() => {
-                        const allDeductions = [];
-                        (lastRun.cases || []).forEach(c => {
-                            if (c.score_deduction_reasons) allDeductions.push(...c.score_deduction_reasons);
+            const selectedCases = state.testCases.filter((tc) => selectedIds.has(String(tc.id)));
+            const plainText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+            const joinList = (value, separator = '; ') => {
+                if (Array.isArray(value)) return value.filter(Boolean).map(plainText).filter(Boolean).join(separator);
+                return plainText(value);
+            };
+            const joinMultiline = (value) => {
+                if (Array.isArray(value)) return value.filter(Boolean).map(plainText).filter(Boolean).join('\n');
+                return plainText(value);
+            };
+            const formatPercent = (value) => {
+                const num = Number(value);
+                return Number.isFinite(num) ? `${Math.round(num * 100)}%` : '-';
+            };
+            const formatScore = (value) => {
+                const num = Number(value);
+                if (!Number.isFinite(num)) return '-';
+                return `${Math.round(num * 10) / 10}`;
+            };
+            const toYesNo = (value) => value === true ? 'Co' : value === false ? 'Khong' : '-';
+            const extractAiReview = (caseReport) => caseReport?.final_evaluation?.ai_review || {};
+            const getLatestRunForTc = (tc) => state.testRuns
+                .filter((run) => String(run.test_case_id) === String(tc.id) || (tc.tc_code && run.tc_code === tc.tc_code))
+                .sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a))[0] || null;
+            const normalizeExecutionStatus = (tc, run) =>
+                plainText(run?.execution_status || tc.execution_status || ((tc.status === 'QUEUED' || tc.status === 'RUNNING') ? tc.status : 'FINISHED')) || '-';
+            const normalizeBusinessStatus = (tc, run) =>
+                plainText(run?.report_status || run?.result_status || tc.result_status || ((tc.status !== 'QUEUED' && tc.status !== 'RUNNING') ? tc.status : '')) || '-';
+            const normalizeDecision = (run) =>
+                plainText(run?.decision || run?.result_status || run?.report_status || run?.status) || '-';
+            const aggregateCaseCount = (run, expectedDecision) => (run?.cases || []).filter((caseReport) => {
+                const decision = plainText(caseReport.decision || caseReport.status);
+                return decision === expectedDecision || (expectedDecision === 'FAIL' && decision === 'FATAL');
+            }).length;
+            const aggregateStepProgress = (run) => {
+                const totals = (run?.cases || []).reduce((acc, caseReport) => {
+                    acc.passed += Number(caseReport.passed_steps) || 0;
+                    acc.total += Number(caseReport.total_steps) || 0;
+                    return acc;
+                }, { passed: 0, total: 0 });
+                return totals.total ? `${totals.passed}/${totals.total}` : '-';
+            };
+            const collectDeductions = (run) => {
+                const deductions = [];
+                (run?.cases || []).forEach((caseReport, caseIndex) => {
+                    (caseReport?.score_deduction_reasons || []).forEach((item) => {
+                        deductions.push({
+                            caseLabel: plainText(caseReport.case_label || caseReport.label || `Case ${caseIndex + 1}`),
+                            dimension: plainText(item.dimension || '-'),
+                            deductedPoints: Number(item.deducted_points) || 0,
+                            reason: plainText(item.reason || '-')
                         });
-                        if (allDeductions.length === 0) return '';
-                        const top = allDeductions.sort((a,b) => (b.deducted_points||0)-(a.deducted_points||0))[0];
-                        return top ? `${top.dimension}: ${top.reason}` : '';
-                    })() : ''
-                ];
+                    });
+                });
+                return deductions.sort((a, b) => b.deductedPoints - a.deductedPoints);
+            };
+            const summarizeTopDeductions = (run, limit = 3) => {
+                const items = collectDeductions(run).slice(0, limit);
+                if (items.length === 0) return '-';
+                return items.map((item) => `${item.caseLabel}: ${item.dimension} (-${item.deductedPoints}) - ${item.reason}`).join('\n');
+            };
+            const joinCases = (run, picker) => (run?.cases || []).map((caseReport, index) => {
+                const aiReview = extractAiReview(caseReport);
+                const value = picker(caseReport, aiReview);
+                return value ? `${plainText(caseReport.case_label || caseReport.label || `Case ${index + 1}`)}: ${value}` : null;
+            }).filter(Boolean).join('\n');
+            const summarizeCaseOutcome = (caseReport) => {
+                const parts = [];
+                const decision = plainText(caseReport?.decision || caseReport?.status);
+                if (decision) parts.push(`Case ${decision}`);
+                if (Number.isFinite(Number(caseReport?.score))) parts.push(`diem ${formatScore(caseReport.score)}`);
+                if (Number.isFinite(Number(caseReport?.confidence_score))) parts.push(`do tin cay ${formatPercent(caseReport.confidence_score)}`);
+                if (Number.isFinite(Number(caseReport?.passed_steps)) && Number.isFinite(Number(caseReport?.total_steps))) {
+                    parts.push(`step ${caseReport.passed_steps}/${caseReport.total_steps}`);
+                }
+                const preview = caseReport?.final_evaluation?.preview_valid;
+                if (preview === true) parts.push('preview hop le');
+                const cart = plainText(caseReport?.final_evaluation?.cart_result);
+                if (cart) parts.push(`cart ${cart}`);
+                return parts.join(', ') || '-';
+            };
+            const buildRunReadableSummary = (tc, run) => {
+                if (!run) return 'Chua co lan chay de tong hop.';
+                const parts = [];
+                const decision = normalizeDecision(run);
+                parts.push(`Ket luan ${decision}`);
+                const passCases = Number(run.passed_cases) || aggregateCaseCount(run, 'PASS_AUTO');
+                const reviewCases = Number(run.review_cases) || aggregateCaseCount(run, 'REVIEW');
+                const failCases = Number(run.failed_cases) || aggregateCaseCount(run, 'FAIL');
+                const totalCases = Number(run.total_cases) || (run.cases || []).length;
+                if (totalCases) parts.push(`${passCases}/${totalCases} case PASS, ${reviewCases} REVIEW, ${failCases} FAIL`);
+                const steps = aggregateStepProgress(run);
+                if (steps !== '-') parts.push(`Tien do step ${steps}`);
+                if (Number.isFinite(Number(run.confidence_score))) parts.push(`Do tin cay ${formatPercent(run.confidence_score)}`);
+                const reasons = joinList(run.reason_codes);
+                if (reasons) parts.push(`Ly do giu ket qua: ${reasons}`);
+                const topDeduction = summarizeTopDeductions(run, 1);
+                if (topDeduction !== '-') parts.push(`Can xem: ${topDeduction}`);
+                return parts.join('. ');
+            };
+            const buildStepReadableSummary = (step) => {
+                const parts = [];
+                const finalStatus = plainText(step.step_verdict || step.status);
+                if (finalStatus) parts.push(`Buoc ${finalStatus}`);
+                if (plainText(step.value_chosen)) parts.push(`Gia tri "${plainText(step.value_chosen)}"`);
+                const ocrEval = step.ocr_evaluation || {};
+                if (ocrEval.found === true) {
+                    parts.push(`OCR thay text${ocrEval.matchDetail ? ` (${plainText(ocrEval.matchDetail)})` : ''}`);
+                } else if (ocrEval.found === false && plainText(ocrEval.text)) {
+                    parts.push('OCR doc duoc nhung chua xac nhan text');
+                }
+                const colorEval = step.color_evaluation || {};
+                if (plainText(colorEval.result)) parts.push(`Color ${plainText(colorEval.result)}`);
+                const temporal = step.temporal_impact || {};
+                if (plainText(temporal.severity)) parts.push(`Temporal ${plainText(temporal.severity)}`);
+                const aiEval = step.ai_evaluation || {};
+                if (plainText(aiEval.ai_verdict || aiEval.verdict)) parts.push(`AI ${plainText(aiEval.ai_verdict || aiEval.verdict)}`);
+                return parts.join('. ') || '-';
+            };
+
+            const selectedContexts = selectedCases.map((tc) => ({ tc, run: getLatestRunForTc(tc) }));
+
+            const summaryHeaders = [
+                'TC ID', 'Ten TC', 'Ma bao cao', 'URL san pham', 'Trang thai chay', 'Ket qua',
+                'Decision', 'Reason Codes', 'Diem', 'Diem tho', 'Do tin cay (%)',
+                'Case PASS', 'Case REVIEW', 'Case FAIL', 'Step PASS/Tong', 'Thoi gian',
+                'AI cuoi', 'AI tom tat (raw)', 'Strengths (raw)', 'Layout (raw)',
+                'Colors (raw)', 'Content (raw)', 'Ly do tru diem chinh', 'Tong ket de doc'
+            ];
+            const summaryRows = selectedContexts.map(({ tc, run }) => [
+                tc.id,
+                tc.name || '',
+                plainText(run?.report_code || run?.tc_code || tc.tc_code) || '-',
+                tc.url || '',
+                normalizeExecutionStatus(tc, run),
+                normalizeBusinessStatus(tc, run),
+                normalizeDecision(run),
+                joinList(run?.reason_codes) || '-',
+                formatScore(run?.score),
+                formatScore(run?.raw_score),
+                formatPercent(run?.confidence_score),
+                Number(run?.passed_cases) || aggregateCaseCount(run, 'PASS_AUTO'),
+                Number(run?.review_cases) || aggregateCaseCount(run, 'REVIEW'),
+                Number(run?.failed_cases) || aggregateCaseCount(run, 'FAIL'),
+                aggregateStepProgress(run),
+                run ? formatDurationMs(run.duration_ms || 0) : '-',
+                joinCases(run, (caseReport, aiReview) => {
+                    const verdict = plainText(aiReview.ai_verdict || aiReview.verdict);
+                    if (!verdict) return null;
+                    return `${verdict}${Number.isFinite(Number(aiReview.confidence)) ? ` (${formatPercent(aiReview.confidence)})` : ''}`;
+                }) || '-',
+                joinCases(run, (caseReport, aiReview) => plainText(aiReview.summary || aiReview.ai_reason || aiReview.raw_image_description)) || '-',
+                joinCases(run, (caseReport, aiReview) => joinList(aiReview.strengths)) || '-',
+                joinCases(run, (caseReport, aiReview) => joinList(aiReview.layout_notes)) || '-',
+                joinCases(run, (caseReport, aiReview) => joinList(aiReview.color_notes)) || '-',
+                joinCases(run, (caseReport, aiReview) => joinList(aiReview.content_notes)) || '-',
+                summarizeTopDeductions(run),
+                buildRunReadableSummary(tc, run)
+            ]);
+
+            const detailHeaders = [
+                'TC ID', 'Ten TC', 'Ma bao cao', 'Run ID', 'Case',
+                'Trang thai', 'Decision', 'Reason Codes', 'Diem', 'Diem tho', 'Do tin cay (%)',
+                'Step PASS', 'Tong step', 'Thoi gian', 'Preview hop le', 'Cart',
+                'AI cuoi', 'AI tu tin (%)', 'AI tom tat (raw)', 'Strengths (raw)',
+                'Layout (raw)', 'Colors (raw)', 'Content (raw)', 'Ly do ky thuat',
+                'Ly do tru diem', 'Tong ket de doc'
+            ];
+            const detailRows = [];
+            selectedContexts.forEach(({ tc, run }) => {
+                (run?.cases || []).forEach((caseReport, caseIndex) => {
+                    const aiReview = extractAiReview(caseReport);
+                    detailRows.push([
+                        tc.id,
+                        tc.name || '',
+                        plainText(run.report_code || run.tc_code || tc.tc_code) || '-',
+                        run.id || '',
+                        plainText(caseReport.case_label || caseReport.label || `Case ${caseIndex + 1}`),
+                        plainText(caseReport.status) || '-',
+                        plainText(caseReport.decision || caseReport.status) || '-',
+                        joinList(caseReport.reason_codes) || '-',
+                        formatScore(caseReport.score),
+                        formatScore(caseReport.raw_score),
+                        formatPercent(caseReport.confidence_score),
+                        Number(caseReport.passed_steps) || 0,
+                        Number(caseReport.total_steps) || 0,
+                        formatDurationMs(caseReport.duration_ms || 0),
+                        toYesNo(caseReport?.final_evaluation?.preview_valid),
+                        plainText(caseReport?.final_evaluation?.cart_result) || '-',
+                        plainText(aiReview.ai_verdict || aiReview.verdict) || '-',
+                        formatPercent(aiReview.confidence),
+                        plainText(aiReview.summary || aiReview.ai_reason || aiReview.raw_image_description) || '-',
+                        joinMultiline(aiReview.strengths) || '-',
+                        joinMultiline(aiReview.layout_notes) || '-',
+                        joinMultiline(aiReview.color_notes) || '-',
+                        joinMultiline(aiReview.content_notes) || '-',
+                        plainText(caseReport.status_reason) || '-',
+                        (caseReport.score_deduction_reasons || []).map((item) =>
+                            `${plainText(item.dimension || '-')}: -${Number(item.deducted_points) || 0} - ${plainText(item.reason || '-')}`
+                        ).join('\n') || '-',
+                        summarizeCaseOutcome(caseReport)
+                    ]);
+                });
             });
 
-            // 2. Case Details Data
-            const detailHeaders = ['Run ID', 'Case Index', 'Label', 'Status', 'Score', 'Passed Steps', 'Total Steps', 'Duration', 'Preview Valid', 'Cart Result', 'AI Verdict', 'AI Score', 'AI Reason', 'Status Reason', 'Deduction Reasons'];
-            const detailRows = [];
-            const selectedRuns = state.testRuns.filter(r => selectedIds.has(String(r.test_case_id)));
-            selectedRuns.forEach(run => {
-                if (run.cases && Array.isArray(run.cases)) {
-                    run.cases.forEach((c, idx) => {
-                        const finalEval = c.final_evaluation || {};
-                        const aiReview = finalEval.ai_review || {};
-                        detailRows.push([
-                            run.id,
-                            idx,
-                            c.label || '',
-                            c.status || '',
-                            c.score || 0,
-                            c.passed_steps || 0,
-                            c.total_steps || 0,
-                            formatDurationMs(c.duration_ms || 0),
-                            finalEval.preview_valid ? 'YES' : 'NO',
-                            finalEval.cart_result || '',
-                            aiReview.ai_verdict || '',
-                            Math.round((aiReview.confidence || 0) * 100),
-                            (aiReview.ai_reason || '').replace(/\n/g, ' '),
-                            c.status_reason || '',
-                            (c.score_deduction_reasons || []).map(r => `${r.dimension}: -${r.deducted_points}pts - ${r.reason}`).join('; ')
+            const stepHeaders = [
+                'TC ID', 'Ten TC', 'Ma bao cao', 'Run ID', 'Case', 'Buoc #', 'Ten buoc',
+                'Action', 'Nhom', 'Gia tri da chon', 'Ket qua buoc', 'Interaction',
+                'Validation', 'Diff', 'SSIM', 'Meaningful Change', 'OCR', 'OCR tin cay (%)',
+                'OCR Match', 'Color', 'Temporal', 'AI Verdict', 'AI tin cay (%)',
+                'AI Reason (raw)', 'Nhan xet de doc'
+            ];
+            const stepRows = [];
+            selectedContexts.forEach(({ tc, run }) => {
+                (run?.cases || []).forEach((caseReport, caseIndex) => {
+                    (caseReport.timeline || []).forEach((step, stepIndex) => {
+                        const ocrEval = step.ocr_evaluation || {};
+                        const colorEval = step.color_evaluation || {};
+                        const temporal = step.temporal_impact || {};
+                        const aiEval = step.ai_evaluation || {};
+                        stepRows.push([
+                            tc.id,
+                            tc.name || '',
+                            plainText(run.report_code || run.tc_code || tc.tc_code) || '-',
+                            run.id || '',
+                            plainText(caseReport.case_label || caseReport.label || `Case ${caseIndex + 1}`),
+                            stepIndex + 1,
+                            plainText(step.name) || '-',
+                            plainText(step.action) || '-',
+                            plainText(step.group_type) || '-',
+                            plainText(step.value_chosen) || '-',
+                            plainText(step.step_verdict || step.status) || '-',
+                            plainText(step.interaction_status) || '-',
+                            plainText(step.validation_status) || '-',
+                            formatScore(step.diff_score),
+                            formatScore(step.ssim_score),
+                            typeof step.meaningful_change === 'boolean' ? (step.meaningful_change ? 'Co' : 'Khong') : '-',
+                            ocrEval.found === true ? 'Thay text' : (ocrEval.found === false ? 'Khong thay text' : '-'),
+                            formatPercent(Number(ocrEval.confidence) / 100),
+                            plainText(ocrEval.matchDetail) || '-',
+                            plainText(colorEval.result) || '-',
+                            plainText(temporal.severity) || '-',
+                            plainText(aiEval.ai_verdict || aiEval.verdict) || '-',
+                            formatPercent(aiEval.confidence),
+                            plainText(aiEval.ai_reason || aiEval.reason) || '-',
+                            buildStepReadableSummary(step)
                         ]);
                     });
-                }
+                });
             });
 
-            // 3. Step AI Detail Data
-            const stepHeaders = ['Run ID', 'Case Index', 'Step ID', 'Action', 'Name', 'Group', 'Interaction', 'Validation', 'Status', 'Diff Score', 'Value Chosen', 'Color HEX', 'Selection Reason', 'AI Verdict', 'AI Confidence', 'AI Reason'];
-            const stepRows = [];
-            selectedRuns.forEach(run => {
-                if (run.cases && Array.isArray(run.cases)) {
-                    run.cases.forEach((c, caseIdx) => {
-                        if (c.timeline && Array.isArray(c.timeline)) {
-                            c.timeline.forEach((step, stepIdx) => {
-                                const aiEval = step.ai_evaluation || {};
-                                stepRows.push([
-                                    run.id,
-                                    caseIdx,
-                                    stepIdx,
-                                    step.action || '',
-                                    step.name || '',
-                                    step.group_type || '',
-                                    step.interaction_status || '',
-                                    step.validation_status || '',
-                                    step.status || '',
-                                    step.diff_score || 0,
-                                    step.value_chosen || '',
-                                    step.option_color_hex || '',
-                                    (step.selection_reason || '').replace(/\n/g, ' '),
-                                    aiEval.ai_verdict || aiEval.verdict || '',
-                                    Math.round((aiEval.confidence || 0) * 100),
-                                    (aiEval.ai_reason || aiEval.reason || '').replace(/\n/g, ' ')
-                                ]);
-                            });
-                        }
-                    });
-                }
-            });
-
-            // 4. Data Dictionary & Metadata
-            const dictionaryHeaders = ['Column', 'Explanation'];
+            const dictionaryHeaders = ['Muc', 'Dien giai'];
             const dictionaryRows = [
-                ['--- METADATA ---', ''],
-                ['Export Time', new Date().toLocaleString()],
-                ['Selected TC Count', selectedIds.size],
-                ['Selected TC IDs', Array.from(selectedIds).join(', ')],
+                ['THONG TIN CHUNG', 'File Excel nay duoc toi uu de doc nhanh khi review report.'],
+                ['Ngon ngu export', 'Tieu de cot va dien giai dung tieng Viet de doc nhanh. Noi dung AI raw duoc giu nguyen ngon ngu goc de tranh sai nghia.'],
+                ['Thoi gian export', new Date().toLocaleString()],
+                ['So TC duoc chon', selectedIds.size],
+                ['TC ID da chon', Array.from(selectedIds).join(', ')],
                 ['', ''],
-                ['--- DEFINITIONS ---', ''],
-                ['Cart Result', 'PASS = Added to cart successfully, FAIL = Failed to add to cart.'],
-                ['AI Verdict', 'PASS / FAIL / ERROR / DISABLED.'],
-                ['AI Score', 'Level of AI confidence (0-100), calculated as confidence * 100.'],
-                ['AI Reason', 'Detailed reason provided by AI judgment (normalized to one line).'],
-                ['Preview Valid', 'YES/NO check for preview image rendering correctness.'],
-                ['Diff Score', 'Visual difference score between steps (lower is usually better).'],
-                ['AI Visual Perception (Raw)', 'Raw description of what the AI "sees" in the final screenshot.'],
-                ['Strengths', 'Positive aspects of the UI design identified by AI.'],
-                ['Layout', 'Specific AI findings related to UI structure and alignment.'],
-                ['Colors', 'Specific AI findings related to color harmony and accessibility.'],
-                ['Content', 'Specific AI findings related to text, fonts, and messaging.'],
-                ['Status Reason', 'Technical code identifying priority failure reason (e.g. NAVIGATION_FAIL).'],
-                ['Deduction Reasons', 'Detailed list of point subtractions found by scoring engine.'],
-                ['Main Deduction Reason', 'The primary reason for score reduction across all test cases.']
+                ['Tong_Quan', 'Moi dong la 1 TC va lay lan chay moi nhat de tong hop.'],
+                ['Chi_Tiet_Case', 'Moi dong la 1 case. Day du diem, confidence, AI cuoi va ly do tru diem.'],
+                ['Chi_Tiet_Buoc', 'Moi dong la 1 step. Dung khi can truy vet buoc nao gay xung dot hoac bi tru diem.'],
+                ['', ''],
+                ['Trang thai chay', 'Trang thai tien trinh chay: QUEUED / RUNNING / FINISHED ...'],
+                ['Ket qua', 'Ket qua nghiep vu sau khi co report: PASS / REVIEW / FAIL / FATAL.'],
+                ['Decision', 'Phan loai cuoi cung cua engine: PASS_AUTO / REVIEW / FAIL_AUTO ...'],
+                ['Diem', 'Diem hien thi cuoi cung sau khi da tinh theo reliability.'],
+                ['Diem tho', 'Diem truoc khi he thong dieu chinh theo confidence / decision policy.'],
+                ['Do tin cay (%)', 'Muc do he thong tu tin vao ket luan cuoi cung.'],
+                ['Reason Codes', 'Ma ly do tong quan giu case o PASS / REVIEW / FAIL.'],
+                ['Ly do tru diem', 'Tong hop cac ly do bi tru diem co trong report.'],
+                ['AI tom tat (raw)', 'Text goc AI duoc giu nguyen de doi chieu khi can.'],
+                ['OCR Match', 'Match detail cua OCR: Exact match / Fuzzy match / khong xac nhan.'],
+                ['Temporal', 'Muc anh huong temporal neu co: HIGH / FATAL / ...'],
+                ['Nhan xet de doc', 'Cot he thong dien giai gon de reviewer doc nhanh ma khong can mo JSON.']
             ];
 
-            // Create Excel Workbook
             if (typeof XLSX === 'undefined') {
                 throw new Error('XLSX library not loaded. Please check your internet connection and reload.');
             }
 
             const wb = XLSX.utils.book_new();
 
-            // Add Summary Sheet
             XLSX.utils.book_append_sheet(
                 wb,
                 XLSX.utils.aoa_to_sheet([summaryHeaders, ...summaryRows]),
-                'TestCases_Summary'
+                'Tong_Quan'
             );
 
-            // Add Details Sheet
             XLSX.utils.book_append_sheet(
                 wb,
                 XLSX.utils.aoa_to_sheet([detailHeaders, ...detailRows]),
-                'Cases_Detail'
+                'Chi_Tiet_Case'
             );
 
-            // Add Step AI Sheet
             XLSX.utils.book_append_sheet(
                 wb,
                 XLSX.utils.aoa_to_sheet([stepHeaders, ...stepRows]),
-                'Steps_AI_Detail'
+                'Chi_Tiet_Buoc'
             );
 
-            // Add Data Dictionary
             XLSX.utils.book_append_sheet(
                 wb,
                 XLSX.utils.aoa_to_sheet([dictionaryHeaders, ...dictionaryRows]),
-                'Data_Dictionary'
+                'Giai_Thich'
             );
 
-            // Write File
-            XLSX.writeFile(wb, 'qa_export.xlsx');
+            const timestamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+            XLSX.writeFile(wb, `bao_cao_qa_${timestamp}.xlsx`);
 
         } catch (err) {
             console.error('Export failed:', err);
             showPopup({ title: 'Export Failed', message: err.message });
         }
     }
-
-
-
-    // ✅ Xử lý lỗi
     async function handleTestRunError(testCase, testCaseId, buttonEl, progressEl, originalText, error) {
         await showPopup({ title: 'Test Failed', message: 'Error: ' + error.message });
         testCase.status = 'PENDING';
@@ -2294,7 +2495,7 @@
                 const dir = btn.dataset.dir;
                 if (dir === 'prev' && page > 1) state.pagination[sectionKey].page--;
                 else if (dir === 'next' && page < totalPages) state.pagination[sectionKey].page++;
-                
+
                 // Re-render only relevant section
                 if (sectionKey === 'dashboard') renderDashboard();
                 else if (sectionKey === 'testCases') renderTestCases();
@@ -2657,7 +2858,7 @@
         runSelectedBtn.disabled = true;
         const originalHtml = runSelectedBtn.innerHTML;
         runSelectedBtn.innerHTML = '<span class="loading-spinner" style="width:12px;height:12px;border-width:2px;margin-right:8px;"></span>Queuing...';
-        
+
         const isHeadless = $('#checkbox-headless') ? $('#checkbox-headless').checked : true;
         const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
         const batchId = 'BATCH_' + Date.now();
@@ -2665,15 +2866,15 @@
         for (const id of ids) {
             try {
                 // Small delay to prevent network congestion
-                await new Promise(r => setTimeout(r, 80)); 
+                await new Promise(r => setTimeout(r, 80));
                 await fetch(`/api/test-cases/${id}/run`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        headless: isHeadless, 
-                        useAi: useAi, 
+                    body: JSON.stringify({
+                        headless: isHeadless,
+                        useAi: useAi,
                         batchId: batchId,
-                        source: 'dashboard-batch' 
+                        source: 'dashboard-batch'
                     })
                 });
             } catch (err) {
@@ -2685,10 +2886,10 @@
         state.selectedTestCases.clear();
         updateBatchUI();
         if (state.currentPage === 'test-cases') renderTestCases();
-        
+
         runSelectedBtn.disabled = false;
         runSelectedBtn.innerHTML = originalHtml;
-        
+
         // Final sync and render
         await syncAllFromApi({ render: true, includeReports: false });
     }
@@ -2719,7 +2920,7 @@
         if (e.target.closest('#btn-run-selected')) {
             const selectedIds = Array.from(state.selectedTestCases);
             if (selectedIds.length === 0) return;
-            
+
             const confirmed = await showPopup({
                 title: 'Batch Run',
                 message: `Run <b>${selectedIds.length}</b> test cases?`,
@@ -2740,8 +2941,8 @@
             if (e.target.checked) state.selectedTestCases.add(id);
             else state.selectedTestCases.delete(id);
             updateBatchUI();
-            
-            // Cập nhật checkbox Select All nếu cần
+
+            // Cáº­p nháº­t checkbox Select All náº¿u cáº§n
             const selectAllCb = $('#tc-select-all');
             if (selectAllCb) {
                 const visibleIds = Array.from($$('.tc-checkbox')).map(cb => cb.dataset.tcId);
@@ -2916,7 +3117,7 @@
     const crawlerProgressBar = document.getElementById('crawler-progress-bar');
     const crawlerProgressLabel = document.getElementById('crawler-progress-label');
     const crawlerProgressCount = document.getElementById('crawler-progress-count');
-    
+
     const checkAllProducts = document.getElementById('check-all-products');
     const btnDeleteSelectedProducts = document.getElementById('btn-delete-selected-products');
     const selectedProductsCount = document.getElementById('selected-products-count');
@@ -2934,22 +3135,22 @@
 
     function renderProducts() {
         if (!productsTbody) return;
-        
+
         productsTbody.innerHTML = '';
         const totalItems = state.products.length;
         const { page, pageSize } = state.pagination.products;
         const paginatedProducts = state.products.slice((page - 1) * pageSize, page * pageSize);
-        
+
         const existingUrls = new Set(state.testCases.map(tc => tc.url));
 
         productsEmpty.style.display = 'none';
         productsCount.textContent = `${totalItems} products found`;
-        
+
         paginatedProducts.forEach(p => {
             const tr = document.createElement('tr');
             tr.style.borderBottom = '1px solid var(--border-subtle)';
             tr.style.transition = 'background 0.2s ease';
-            
+
             const key = `${p.product_id}|${p.platform}`;
             const isChecked = state.selectedProducts.has(key);
 
@@ -2967,17 +3168,17 @@
                 </td>
                 <td style="padding: 12px 16px; font-size: 0.75rem; color: var(--text-muted);">${new Date(p.checked_at).toLocaleString()}</td>
                 <td style="padding: 12px 16px; display: flex; gap: 4px;">
-                    ${existingUrls.has(p.final_url || p.redirect_url) 
-                        ? `<button class="btn-ghost btn-sm" style="color: var(--text-muted); cursor: not-allowed;" title="Test case already exists" disabled>TC Exists</button>`
-                        : `<button class="btn-ghost btn-sm btn-create-tc" style="color: var(--accent-success);" data-pid="${p.product_id}" data-platform="${p.platform}" data-key="${key}">Create TC</button>`
-                    }
+                    ${existingUrls.has(p.final_url || p.redirect_url)
+                    ? `<button class="btn-ghost btn-sm" style="color: var(--text-muted); cursor: not-allowed;" title="Test case already exists" disabled>TC Exists</button>`
+                    : `<button class="btn-ghost btn-sm btn-create-tc" style="color: var(--accent-success);" data-pid="${p.product_id}" data-platform="${p.platform}" data-key="${key}">Create TC</button>`
+                }
                     <button class="btn-ghost btn-sm btn-delete-product" data-pid="${p.product_id}" data-platform="${p.platform}">Delete</button>
                 </td>
             `;
-            
+
             tr.addEventListener('mouseenter', () => tr.style.background = 'rgba(255,255,255,0.02)');
             tr.addEventListener('mouseleave', () => tr.style.background = 'transparent');
-            
+
             productsTbody.appendChild(tr);
         });
 
@@ -2993,7 +3194,7 @@
         if (selectedCount > 0) {
             btnDeleteSelectedProducts.style.display = 'flex';
             if (btnConvert) btnConvert.style.display = 'flex';
-            
+
             selectedProductsCount.textContent = selectedCount;
             if (convertCount) convertCount.textContent = selectedCount;
         } else {
@@ -3006,24 +3207,24 @@
         btnStartCrawl.addEventListener('click', async () => {
             const idsText = crawlerIdsInput.value.trim();
             if (!idsText) return showPopup({ title: 'Error', message: 'Please enter at least one Product ID.' });
-            
+
             const ids = idsText.split('\n').map(s => s.trim()).filter(s => s.length > 0);
             const platformRadio = document.querySelector('input[name="crawler-platform"]:checked');
             const platform = platformRadio ? platformRadio.value : 'printerval.com';
-            
+
             btnStartCrawl.disabled = true;
             crawlerProgressDiv.style.display = 'block';
             crawlerProgressBar.style.width = '0%';
             crawlerProgressLabel.textContent = 'Starting crawler...';
             crawlerProgressCount.textContent = `0/${ids.length}`;
-            
+
             try {
                 const res = await fetch('/api/products/crawl', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ids, platform })
                 });
-                
+
                 if (!res.ok) throw new Error('Failed to start crawler');
             } catch (err) {
                 console.error('Crawler start error:', err);
@@ -3063,7 +3264,7 @@
             if (e.target.classList.contains('btn-create-tc')) {
                 const key = e.target.dataset.key;
                 const pid = e.target.dataset.pid;
-                
+
                 try {
                     const res = await fetch('/api/products/convert-to-test-cases', {
                         method: 'POST',
@@ -3086,11 +3287,11 @@
             if (e.target.classList.contains('btn-delete-product')) {
                 const pid = e.target.dataset.pid;
                 const platform = e.target.dataset.platform;
-                
-                if (await showPopup({ 
-                    title: 'Delete Product', 
-                    message: `Are you sure you want to delete product ${pid} (${platform})?`, 
-                    confirm: true 
+
+                if (await showPopup({
+                    title: 'Delete Product',
+                    message: `Are you sure you want to delete product ${pid} (${platform})?`,
+                    confirm: true
                 })) {
                     try {
                         const res = await fetch('/api/products/batch-delete', {
@@ -3111,10 +3312,10 @@
     if (btnConvertToTestCases) {
         btnConvertToTestCases.addEventListener('click', async () => {
             const count = state.selectedProducts.size;
-            if (await showPopup({ 
-                title: 'Create Test Cases', 
-                message: `Create test cases for ${count} selected products?`, 
-                confirm: true 
+            if (await showPopup({
+                title: 'Create Test Cases',
+                message: `Create test cases for ${count} selected products?`,
+                confirm: true
             })) {
                 try {
                     const res = await fetch('/api/products/convert-to-test-cases', {
@@ -3142,10 +3343,10 @@
     if (btnDeleteSelectedProducts) {
         btnDeleteSelectedProducts.addEventListener('click', async () => {
             const count = state.selectedProducts.size;
-            if (await showPopup({ 
-                title: 'Delete Selected', 
-                message: `Are you sure you want to delete ${count} selected products?`, 
-                confirm: true 
+            if (await showPopup({
+                title: 'Delete Selected',
+                message: `Are you sure you want to delete ${count} selected products?`,
+                confirm: true
             })) {
                 try {
                     const res = await fetch('/api/products/batch-delete', {
@@ -3167,21 +3368,21 @@
 
     function handleSSECrawlerProgress(data) {
         if (!crawlerProgressDiv) return;
-        
+
         const { count, total, id, result, success } = data;
         const percent = Math.floor((count / total) * 100);
-        
+
         crawlerProgressBar.style.width = `${percent}%`;
         crawlerProgressLabel.textContent = `Processing ${id}... (${success ? 'Success' : 'Failed'})`;
         crawlerProgressCount.textContent = `${count}/${total}`;
-        
+
         const existingIdx = state.products.findIndex(p => p.product_id === result.product_id && p.platform === result.platform);
         if (existingIdx >= 0) {
             state.products[existingIdx] = result;
         } else {
             state.products.unshift(result);
         }
-        
+
         // Use debounced render to avoid UI lag during parallel updates
         if (state.currentPage === 'products') {
             debouncedRenderProducts();
@@ -3199,18 +3400,18 @@
 
     function handleSSECrawlerFinished(data) {
         if (!crawlerProgressDiv) return;
-        
+
         crawlerProgressBar.style.width = '100%';
         crawlerProgressLabel.textContent = 'Crawling completed!';
         btnStartCrawl.disabled = false;
-        
+
         setTimeout(() => {
             crawlerProgressDiv.style.display = 'none';
             fetchProducts(true);
         }, 3000);
     }
 
-    // ✅ Cleanup polling intervals khi đóng trang
+    // âœ… Cleanup polling intervals khi Ä‘Ã³ng trang
     window.addEventListener('beforeunload', () => {
         state.runningTests.forEach(({ pollInterval }) => {
             if (pollInterval) clearInterval(pollInterval);

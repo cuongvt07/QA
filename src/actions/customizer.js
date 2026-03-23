@@ -66,6 +66,64 @@ const PREVIEW_IMAGE_SELECTORS = [
     '.product-image-main img',
 ];
 
+const pagePreviewCaptureState = new WeakMap();
+const CANVAS_FALLBACK_COOLDOWN_MS = 15000;
+
+function getPreviewCaptureState(page) {
+    if (!pagePreviewCaptureState.has(page)) {
+        pagePreviewCaptureState.set(page, {
+            domOnlyUntil: 0,
+            lastPreviewSelector: null,
+            lastCanvasWarningAt: 0,
+            lastCanvasErrorAt: 0,
+            canvasUnavailableMode: false,
+        });
+    }
+    return pagePreviewCaptureState.get(page);
+}
+
+async function isElementActionable(element) {
+    if (!element) return false;
+
+    const isVisible = await element.isVisible().catch(() => false);
+    if (!isVisible) return false;
+
+    const box = await element.boundingBox().catch(() => null);
+    if (!box || box.width < 8 || box.height < 8) return false;
+
+    const blocked = await element.evaluate((node) => {
+        const style = window.getComputedStyle(node);
+        return Boolean(
+            node.disabled ||
+            node.getAttribute('aria-disabled') === 'true' ||
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            style.pointerEvents === 'none'
+        );
+    }).catch(() => true);
+
+    return !blocked;
+}
+
+async function clickActionableElement(element, { timeoutMs = 2500 } = {}) {
+    if (!await isElementActionable(element)) return false;
+
+    await element.scrollIntoViewIfNeeded({ timeout: Math.min(timeoutMs, 1500) }).catch(() => {});
+
+    try {
+        await element.click({ timeout: timeoutMs });
+        return true;
+    } catch {
+        try {
+            if (!await isElementActionable(element)) return false;
+            await element.click({ timeout: Math.min(timeoutMs, 1500), force: true });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+}
+
 function parseInputMaxLength(raw) {
     const n = parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : null;
@@ -170,29 +228,121 @@ function getLuminance(hex) {
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-async function extractOptionColor(optionElement) {
+const SEMANTIC_COLOR_KEYWORDS = [
+    { token: 'charcoal', hex: '#36454F' },
+    { token: 'light blue', hex: '#7EC8E3' },
+    { token: 'dark blue', hex: '#1F3A5F' },
+    { token: 'navy', hex: '#1F3A5F' },
+    { token: 'silver', hex: '#C0C0C0' },
+    { token: 'grey', hex: '#808080' },
+    { token: 'gray', hex: '#808080' },
+    { token: 'brown', hex: '#8B4513' },
+    { token: 'blonde', hex: '#D9B46B' },
+    { token: 'gold', hex: '#D4AF37' },
+    { token: 'beige', hex: '#E8D8C8' },
+    { token: 'cream', hex: '#F3E5C8' },
+    { token: 'white', hex: '#FFFFFF' },
+    { token: 'black', hex: '#000000' },
+    { token: 'red', hex: '#C93A3A' },
+    { token: 'maroon', hex: '#800000' },
+    { token: 'pink', hex: '#E88AAE' },
+    { token: 'purple', hex: '#7E57C2' },
+    { token: 'violet', hex: '#7E57C2' },
+    { token: 'blue', hex: '#2F6DB5' },
+    { token: 'green', hex: '#2E8B57' },
+    { token: 'orange', hex: '#E67E22' },
+    { token: 'yellow', hex: '#F1C40F' },
+    { token: 'teal', hex: '#008080' },
+    { token: 'tan', hex: '#D2B48C' },
+];
+
+function escapeRegex(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractSemanticColor(...values) {
+    const combined = values
+        .filter(Boolean)
+        .map((value) => String(value).toLowerCase())
+        .join(' ');
+
+    for (const entry of SEMANTIC_COLOR_KEYWORDS) {
+        const pattern = new RegExp(`\\b${escapeRegex(entry.token)}\\b`, 'i');
+        if (pattern.test(combined)) {
+            return {
+                raw: entry.token,
+                hex: entry.hex,
+                source: 'semantic-label',
+            };
+        }
+    }
+
+    return { raw: '', hex: '', source: '' };
+}
+
+function looksLikeLiteralColor(value) {
+    const text = String(value || '').trim();
+    return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(text)
+        || /^rgba?\(/i.test(text)
+        || /^hsla?\(/i.test(text);
+}
+
+function isNeutralLikeHex(hex) {
+    if (!hex || hex.length < 7) return true;
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    const spread = Math.max(r, g, b) - Math.min(r, g, b);
+    const luminance = getLuminance(hex);
+    return spread < 18 || luminance > 235;
+}
+
+function isTrustedColorCandidate(source, value, hex) {
+    if (!hex) return false;
+
+    if (source === 'data-color' || source === 'variant-color-code') {
+        return true;
+    }
+
+    if (source === 'inline-style') {
+        return !isNeutralLikeHex(hex);
+    }
+
+    if (source === 'title' || source === 'aria-label' || source === 'text' || source === 'data-value' || source === 'data-variant-option-slug') {
+        return looksLikeLiteralColor(value);
+    }
+
+    if (String(source || '').startsWith('computed-background')) {
+        return !isNeutralLikeHex(hex);
+    }
+
+    return false;
+}
+
+async function extractOptionColor(optionElement, context = {}) {
     try {
         const result = await optionElement.evaluate((node) => {
             const transparentSet = new Set(['transparent', 'rgba(0, 0, 0, 0)']);
             const candidates = [];
-            const addCandidate = (value) => {
+            const addCandidate = (value, source) => {
                 if (!value || typeof value !== 'string') return;
                 const cleaned = value.trim();
                 if (!cleaned) return;
-                candidates.push(cleaned);
+                candidates.push({ value: cleaned, source });
             };
 
             // 1. Check data attributes commonly used by Printerval/Meear
-            addCandidate(node.getAttribute('data-color'));
-            addCandidate(node.getAttribute('data-value'));
-            addCandidate(node.getAttribute('data-variant-option-slug'));
-            addCandidate(node.getAttribute('variant-color-code'));
-            addCandidate(node.getAttribute('title'));
+            addCandidate(node.getAttribute('data-color'), 'data-color');
+            addCandidate(node.getAttribute('data-value'), 'data-value');
+            addCandidate(node.getAttribute('data-variant-option-slug'), 'data-variant-option-slug');
+            addCandidate(node.getAttribute('variant-color-code'), 'variant-color-code');
+            addCandidate(node.getAttribute('title'), 'title');
+            addCandidate(node.getAttribute('aria-label'), 'aria-label');
 
             // 2. Check inline styles
             const inlineStyle = node.getAttribute('style') || '';
             const bgMatch = inlineStyle.match(/background(?:-color)?\s*:\s*([^;]+)/i);
-            if (bgMatch && bgMatch[1]) addCandidate(bgMatch[1]);
+            if (bgMatch && bgMatch[1]) addCandidate(bgMatch[1], 'inline-style');
 
             // 3. Inspect children (swatches often have internal spans for color)
             const preferred = node.querySelectorAll('[class*="swatch"], [class*="color"], [style*="background"]');
@@ -203,39 +353,58 @@ async function extractOptionColor(optionElement) {
                 const style = window.getComputedStyle(el);
                 const bg = style.backgroundColor;
                 if (bg && !transparentSet.has(bg)) {
-                    addCandidate(bg);
+                    addCandidate(bg, el === node ? 'computed-background:self' : 'computed-background:child');
                 }
             }
 
             // 4. Also check text content if it's a simple color name
             const text = node.innerText.trim().toLowerCase();
             if (text.length > 0 && text.length < 20) {
-                addCandidate(text);
+                addCandidate(text, 'text');
             }
 
-            return candidates;
+            return {
+                candidates,
+                semanticHints: [
+                    node.getAttribute('title') || '',
+                    node.getAttribute('aria-label') || '',
+                    text,
+                ],
+            };
         });
 
-        // Try to find a valid hex in the candidates
-        let finalHex = '';
-        let rawSource = '';
-        
-        for (const candidate of result) {
-            const hex = toColorHex(candidate);
-            if (hex) {
-                finalHex = hex;
-                rawSource = candidate;
+        let trustedChoice = null;
+
+        for (const candidate of result.candidates || []) {
+            const hex = toColorHex(candidate.value);
+            if (!hex) continue;
+            if (isTrustedColorCandidate(candidate.source, candidate.value, hex)) {
+                trustedChoice = {
+                    raw: candidate.value,
+                    hex,
+                    source: candidate.source,
+                };
                 break;
             }
         }
 
+        const semantic = extractSemanticColor(
+            ...(result.semanticHints || []),
+            context.groupName,
+            context.optionLabel,
+        );
+
         return {
-            raw: rawSource,
-            hex: finalHex,
-            luminance: finalHex ? getLuminance(finalHex) : null
+            raw: trustedChoice?.raw || semantic.raw || '',
+            hex: trustedChoice?.hex || '',
+            luminance: trustedChoice?.hex ? getLuminance(trustedChoice.hex) : null,
+            source: trustedChoice?.source || semantic.source || '',
+            trusted: Boolean(trustedChoice?.hex),
+            semanticRaw: semantic.raw || '',
+            semanticHex: semantic.hex || '',
         };
     } catch {
-        return { raw: '', hex: '' };
+        return { raw: '', hex: '', source: '', trusted: false, semanticRaw: '', semanticHex: '' };
     }
 }
 
@@ -261,8 +430,14 @@ async function smartWait(page, groupType = null) {
     };
     page.on('request', requestListener);
     
-    // Adaptive listen time: shorter for image_options and dropdowns
-    const listenTime = groupType === 'image_option' ? 500 : 700;
+    // Adaptive listen time tuned to reduce idle wait without skipping genuine async work.
+    const listenTime = groupType === 'image_option'
+        ? 250
+        : groupType === 'text_input'
+            ? 220
+            : groupType === 'dropdown'
+                ? 260
+                : 400;
     await page.waitForTimeout(listenTime);
     page.off('request', requestListener);
 
@@ -277,7 +452,11 @@ async function smartWait(page, groupType = null) {
                 new Promise(r => setTimeout(r, 8000)) // Absolute hard cap
             ]);
             // Adaptive settle time
-            const settleTime = groupType === 'image_option' ? 300 : 500;
+            const settleTime = groupType === 'image_option'
+                ? 180
+                : groupType === 'text_input'
+                    ? 160
+                    : 280;
             await page.waitForTimeout(settleTime);
         } catch (e) {
             console.warn('      [WARN] SmartWait: Loading timer exceeded 8s hard cap.');
@@ -285,7 +464,7 @@ async function smartWait(page, groupType = null) {
         }
     } else {
         console.log('      [SKIP] No API request (cached), proceeding immediately.');
-        await page.waitForTimeout(100);
+        await page.waitForTimeout(60);
     }
 
     return { apiDetected, waitedMs: Date.now() - start, timedOut };
@@ -361,7 +540,7 @@ async function detectCustomizer(page) {
     return { found: false, selector: null };
 }
 
-async function waitForGroupCountStable(page, { pollMs = 250, stableRounds = 2, timeoutMs = 1200 } = {}) {
+async function waitForGroupCountStable(page, { pollMs = 180, stableRounds = 2, timeoutMs = 700 } = {}) {
     const deadline = Date.now() + timeoutMs;
     let stable = 0;
     let lastCount = -1;
@@ -442,65 +621,92 @@ async function getVisibleOptionGroups(page) {
 
 async function capturePreviewScreenshot(page, filepath) {
     const fs = require('fs');
+    const captureState = getPreviewCaptureState(page);
+    const now = Date.now();
+
+    if (captureState.canvasUnavailableMode && now >= captureState.domOnlyUntil) {
+        captureState.canvasUnavailableMode = false;
+        captureState.domOnlyUntil = 0;
+    }
     
     // 1. Try canvas extraction first (fastest, perfectly ignores DOM popups and delays)
-    try {
-        const canvasData = await page.evaluate(() => {
-            const findBestCanvas = () => {
-                const canvases = Array.from(document.querySelectorAll('canvas'));
-                if (canvases.length === 0) return null;
+    if (!captureState.canvasUnavailableMode && now >= captureState.domOnlyUntil) {
+        try {
+            const canvasData = await page.evaluate(() => {
+                const findBestCanvas = () => {
+                    const canvases = Array.from(document.querySelectorAll('canvas'));
+                    if (canvases.length === 0) return null;
 
-                // Priority 1: Visible canvases inside customizer containers
-                const customizerSelectors = ['.customily-preview', '.customily-app', '#formCustomization', '.customily-canvas-container'];
-                for (const sel of customizerSelectors) {
-                    const container = document.querySelector(sel);
-                    if (container) {
-                        const internal = container.querySelector('canvas');
-                        if (internal && internal.offsetWidth > 50) return internal;
+                    // Priority 1: Visible canvases inside customizer containers
+                    const customizerSelectors = ['.customily-preview', '.customily-app', '#formCustomization', '.customily-canvas-container'];
+                    for (const sel of customizerSelectors) {
+                        const container = document.querySelector(sel);
+                        if (container) {
+                            const internal = container.querySelector('canvas');
+                            if (internal && internal.offsetWidth > 50) return internal;
+                        }
                     }
+
+                    // Priority 2: Largest visible canvas
+                    const visible = canvases
+                        .filter(c => c.offsetWidth > 100 && c.offsetHeight > 100)
+                        .sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight));
+                    
+                    return visible[0] || null;
+                };
+
+                const canvas = findBestCanvas();
+                if (!canvas) return null;
+
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                if (ctx) {
+                    const samplePoints = [
+                        [Math.floor(canvas.width / 2), Math.floor(canvas.height / 2)],
+                        [10, 10],
+                        [Math.max(0, Math.floor(canvas.width * 0.75)), Math.max(0, Math.floor(canvas.height * 0.25))]
+                    ];
+                    const allTransparent = samplePoints.every(([x, y]) => {
+                        const safeX = Math.max(0, Math.min(canvas.width - 1, x));
+                        const safeY = Math.max(0, Math.min(canvas.height - 1, y));
+                        const pix = ctx.getImageData(safeX, safeY, 1, 1).data;
+                        return pix[3] === 0;
+                    });
+                    if (allTransparent) return 'BLANK_DETECTED';
                 }
 
-                // Priority 2: Largest visible canvas
-                const visible = canvases
-                    .filter(c => c.offsetWidth > 100 && c.offsetHeight > 100)
-                    .sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight));
-                
-                return visible[0] || null;
-            };
+                return canvas.toDataURL('image/png');
+            });
 
-            const canvas = findBestCanvas();
-            if (!canvas) return null;
-
-            // Check if canvas is blank/empty
-            // We sample a few points or check if the data URL is extremely short (not always reliable)
-            // Better: draw to a tiny 1x1 or check some pixels
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            if (ctx) {
-                const pix = ctx.getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data;
-                // If the center pixel is fully transparent, it might be loading or blank
-                if (pix[3] === 0) {
-                     // Try another point
-                     const pix2 = ctx.getImageData(10, 10, 1, 1).data;
-                     if (pix2[3] === 0) return 'BLANK_DETECTED';
+            if (canvasData && canvasData !== 'BLANK_DETECTED') {
+                const base64Data = canvasData.replace(/^data:image\/png;base64,/, '');
+                fs.writeFileSync(filepath, base64Data, 'base64');
+                captureState.domOnlyUntil = 0;
+                captureState.canvasUnavailableMode = false;
+                return filepath;
+            } else if (canvasData === 'BLANK_DETECTED') {
+                captureState.domOnlyUntil = Date.now() + CANVAS_FALLBACK_COOLDOWN_MS;
+                captureState.canvasUnavailableMode = true;
+                if (!captureState.lastCanvasWarningAt || (now - captureState.lastCanvasWarningAt) >= CANVAS_FALLBACK_COOLDOWN_MS) {
+                    console.log('    [INFO] Canvas preview is blank right now; using DOM screenshot fallback temporarily.');
+                    captureState.lastCanvasWarningAt = now;
                 }
             }
-
-            return canvas.toDataURL('image/png');
-        });
-
-        if (canvasData && canvasData !== 'BLANK_DETECTED') {
-            const base64Data = canvasData.replace(/^data:image\/png;base64,/, '');
-            fs.writeFileSync(filepath, base64Data, 'base64');
-            return filepath;
-        } else if (canvasData === 'BLANK_DETECTED') {
-            console.warn('    [WARN] Canvas detected as blank/transparent, falling back to element screenshot.');
+        } catch (e) {
+            captureState.domOnlyUntil = Date.now() + Math.floor(CANVAS_FALLBACK_COOLDOWN_MS / 2);
+            captureState.canvasUnavailableMode = true;
+            if (!captureState.lastCanvasErrorAt || (now - captureState.lastCanvasErrorAt) >= Math.floor(CANVAS_FALLBACK_COOLDOWN_MS / 2)) {
+                console.log(`    [INFO] Direct canvas capture unavailable; using DOM screenshot fallback. (${e.message})`);
+                captureState.lastCanvasErrorAt = now;
+            }
         }
-    } catch (e) {
-        console.warn(`    [WARN] Direct canvas capture failed, falling back to DOM screenshot: ${e.message}`);
     }
 
     // 2. Fallback to DOM element screenshot
-    for (const selector of PREVIEW_IMAGE_SELECTORS) {
+    const orderedSelectors = captureState.lastPreviewSelector
+        ? [captureState.lastPreviewSelector, ...PREVIEW_IMAGE_SELECTORS.filter((sel) => sel !== captureState.lastPreviewSelector)]
+        : PREVIEW_IMAGE_SELECTORS;
+
+    for (const selector of orderedSelectors) {
         try {
             const el = await page.$(selector);
             if (el) {
@@ -509,6 +715,7 @@ async function capturePreviewScreenshot(page, filepath) {
                     const box = await el.boundingBox();
                     if (box && box.width > 50 && box.height > 50) {
                         await el.screenshot({ path: filepath });
+                        captureState.lastPreviewSelector = selector;
                         return filepath;
                     }
                 }
@@ -555,9 +762,9 @@ async function scanFirstPersonalizedGroup(page) {
     const options = [];
     for (let i = 0; i < firstImageGroup.optionItems.length; i++) {
         const item = firstImageGroup.optionItems[i];
-        const colorMeta = await extractOptionColor(item);
+        const colorMeta = await extractOptionColor(item, { groupName: firstImageGroup.name });
         const rawTitle = (await item.getAttribute('title')) || '';
-        const title = rawTitle || (colorMeta.hex ? `Color ${colorMeta.hex}` : `Option ${i + 1}`);
+        const title = rawTitle || colorMeta.semanticRaw || (colorMeta.hex ? `Color ${colorMeta.hex}` : `Option ${i + 1}`);
         let thumbnail = '';
         const thumbImg = await item.$('img');
         if (thumbImg) {
@@ -631,6 +838,10 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                 option_thumbnail: '',
                 option_color: '',
                 option_color_hex: '',
+                option_color_source: '',
+                option_color_semantic: '',
+                option_color_semantic_hex: '',
+                color_audit_applicable: false,
                 state_before: '',
                 state_after: '',
                 diff_score: -1,
@@ -646,7 +857,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                 let beforePath = path.join(screenshotDir, `step_${stepIndex}_before.png`);
                 
                 // Wait for the specific group type to ensure the page is ready
-                const waitTime = group.type === 'image_option' ? 250 : 150;
+                const waitTime = group.type === 'image_option' ? 150 : 110;
                 await page.waitForTimeout(waitTime);
                 
                 // Ensure page is clean and stabilized before 'before' capture
@@ -692,7 +903,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                     });
                     await page.keyboard.press('Enter');
                     await input.evaluate((node) => node.blur());
-                    await page.waitForTimeout(400);
+                    await page.waitForTimeout(250);
                     stepData.value_chosen = value;
                     if (maxLength) stepData.message = `Text input respects maxlength=${maxLength}.`;
                     prevSet.add(value);
@@ -746,9 +957,9 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                             for (const item of items) {
                                 const cls = (await item.getAttribute('class')) || '';
                                 if (!cls.includes('active')) {
-                                    const colorMeta = await extractOptionColor(item);
                                     const rawTitle = (await item.getAttribute('title')) || '';
-                                    const optionKey = rawTitle || colorMeta.hex || colorMeta.raw || '';
+                                    const colorMeta = await extractOptionColor(item, { groupName: group.name, optionLabel: rawTitle });
+                                    const optionKey = rawTitle || colorMeta.semanticRaw || colorMeta.hex || colorMeta.raw || '';
                                     
                                     const itemData = { element: item, key: optionKey, color: colorMeta, title: rawTitle };
                                     allNonActiveItems.push(itemData);
@@ -792,10 +1003,15 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                             }
                             if (isFirstImageGroup) isFirstImageGroup = false;
                         }
-                        const colorMeta = await extractOptionColor(targetItem);
-                        stepData.value_chosen = (await targetItem.getAttribute('title')) || (colorMeta.hex ? `Color ${colorMeta.hex}` : 'Selected option');
+                        const rawTitle = (await targetItem.getAttribute('title')) || '';
+                        const colorMeta = await extractOptionColor(targetItem, { groupName: group.name, optionLabel: rawTitle });
+                        stepData.value_chosen = rawTitle || colorMeta.semanticRaw || (colorMeta.hex ? `Color ${colorMeta.hex}` : 'Selected option');
                         stepData.option_color = colorMeta.raw || '';
-                        stepData.option_color_hex = colorMeta.hex || '';
+                        stepData.option_color_hex = colorMeta.trusted ? (colorMeta.hex || '') : '';
+                        stepData.option_color_source = colorMeta.trusted ? (colorMeta.source || '') : (colorMeta.semanticHex ? 'semantic-label' : '');
+                        stepData.option_color_semantic = colorMeta.semanticRaw || '';
+                        stepData.option_color_semantic_hex = colorMeta.semanticHex || '';
+                        stepData.color_audit_applicable = Boolean(colorMeta.trusted && colorMeta.hex);
                         if (!previouslySelectedValues[group.name]) previouslySelectedValues[group.name] = new Set();
                         previouslySelectedValues[group.name].add(stepData.value_chosen);
                         const thumbImg = await targetItem.$('img');
@@ -859,14 +1075,14 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                     const tSettle = Date.now();
                     
                     // Risk-based adaptive execution
-                    let adaptiveTimeout = stepData.render_affecting_control ? 2200 : 1800;
-                    if (waitResult.apiDetected) adaptiveTimeout = 4000;
-                    else if (stepData.is_label_confirmed) adaptiveTimeout = 1400;
+                    let adaptiveTimeout = stepData.render_affecting_control ? 1800 : 1400;
+                    if (waitResult.apiDetected) adaptiveTimeout = 2500;
+                    else if (stepData.is_label_confirmed) adaptiveTimeout = 900;
                     
                     // Extra settle if dark color was chosen
                     if (stepData.requires_extra_settle) {
                         console.log('      [SETTLE] Extra wait for dark color (low contrast)...');
-                        adaptiveTimeout += 1000;
+                        adaptiveTimeout += 700;
                     }
 
                     await waitForPreviewSettle(page, 2, 250, adaptiveTimeout, stepData.is_label_confirmed);
@@ -904,8 +1120,8 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                         const { calculateVisualDiff } = require('../actions/validator');
                         let { diffPercent } = await calculateVisualDiff(stepData.state_before, afterPath);
                         if (group.type === 'image_option' && diffPercent === 0) {
-                            console.log(`      [RETRY] image_option after=0% diff - canvas may not be settled. Retaking in 1200ms...`);
-                            await page.waitForTimeout(1200);
+                            console.log(`      [RETRY] image_option after=0% diff - canvas may not be settled. Retaking in 600ms...`);
+                            await page.waitForTimeout(600);
                             await capturePreviewScreenshot(page, afterPath);
                             console.log(`      [RETRY] After screenshot retaken.`);
                             diffPercent = (await calculateVisualDiff(stepData.state_before, afterPath)).diffPercent;
@@ -958,21 +1174,23 @@ async function handleProductVariants(page, logPrefix = '', options = {}) {
                 }
 
                 if (entry.type === 'select') {
-                    await el.selectOption(entry.value);
+                    const currentValue = await el.inputValue().catch(() => null);
+                    if (currentValue !== entry.value) {
+                        await el.selectOption(entry.value);
+                    }
                     console.log(`${logPrefix}      [VARIANT] Replayed select: ${entry.text}`);
                 } else if (entry.type === 'click') {
                     const items = await el.$$('.js-choose-variant, .product-size-item:not(.close-choose-size), li[ng-click*="selectVariant"], .swatch-option, .variant-item');
                     const target = items[entry.itemIndex];
-                    if (target) {
-                        await target.click();
+                    if (target && await clickActionableElement(target)) {
                         console.log(`${logPrefix}      [VARIANT] Replayed click: ${entry.text}`);
                         await page.waitForTimeout(300);
                     } else {
-                        console.warn(`${logPrefix}      [VARIANT] Item ${entry.itemIndex} not found in group ${entry.groupIndex}`);
+                        console.log(`${logPrefix}      [VARIANT] Skipped replay for non-actionable item ${entry.itemIndex} in group ${entry.groupIndex}`);
                     }
                 }
             } catch (replayErr) {
-                console.warn(`${logPrefix} [WARN] Replay failed for variant entry: ${replayErr.message}`);
+                console.log(`${logPrefix} [VARIANT] Replay skipped: ${replayErr.message}`);
             }
         }
         return variants_selected;
@@ -1035,8 +1253,8 @@ async function handleProductVariants(page, logPrefix = '', options = {}) {
                 // Expand logic
                 const expanders = await el.$$('.more-color, .expand-colors, .show-more, [class*="more"]');
                 for(const exp of expanders) {
-                    if (await exp.isVisible()) {
-                        await exp.click();
+                    if (await isElementActionable(exp)) {
+                        await clickActionableElement(exp, { timeoutMs: 1500 });
                         await page.waitForTimeout(300);
                     }
                 }
@@ -1047,9 +1265,14 @@ async function handleProductVariants(page, logPrefix = '', options = {}) {
                     const itemData = [];
                     for (let j = 0; j < items.length; j++) {
                         const item = items[j];
+                        if (!await isElementActionable(item)) continue;
                         const colorInfo = await extractOptionColor(item);
-                        const text = await item.innerText();
+                        const text = await item.innerText().catch(() => '');
                         itemData.push({ element: item, index: j, text: text.trim(), color: colorInfo });
+                    }
+
+                    if (itemData.length === 0) {
+                        continue;
                     }
 
                     let chosenItem = itemData[0];
@@ -1061,15 +1284,24 @@ async function handleProductVariants(page, logPrefix = '', options = {}) {
                         reason = `High contrast color (lum:${Math.round(goodContrast.color.luminance)})`;
                     }
 
-                    await chosenItem.element.click();
-                    const labelStr = `${name}: ${chosenItem.text}`;
-                    results.push({ type: 'click', groupIndex: i, itemIndex: chosenItem.index, text: labelStr });
-                    console.log(`      [VARIANT] Clicked ${labelStr} (${reason})`);
-                    await page.waitForTimeout(500);
+                    const clicked = await clickActionableElement(chosenItem.element, { timeoutMs: 2500 });
+                    if (clicked) {
+                        const labelStr = `${name}: ${chosenItem.text}`;
+                        results.push({ type: 'click', groupIndex: i, itemIndex: chosenItem.index, text: labelStr });
+                        console.log(`      [VARIANT] Clicked ${labelStr} (${reason})`);
+                        await page.waitForTimeout(500);
+                    } else {
+                        console.log(`      [VARIANT] Skipped non-actionable variant group "${name}"`);
+                    }
                 }
             }
         } catch (e) {
-            console.warn(`      [WARN] Failed to handle variant: ${e.message}`);
+            const message = String(e?.message || '');
+            if (/not visible|not attached|timeout|element is outside/i.test(message)) {
+                console.log(`      [VARIANT] Skipped unstable variant group: ${message}`);
+            } else {
+                console.warn(`      [WARN] Failed to handle variant: ${message}`);
+            }
         }
     }
     return results;

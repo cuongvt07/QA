@@ -39,12 +39,14 @@ function buildDiffSignal(step) {
 function buildOcrSignal(step) {
     const ocr = step.ocr_evaluation;
     if (!ocr || ocr.error) {
-        return { found: false, confidence: null, text: '', availability: UNAVAIL };
+        return { found: false, confidence: null, text: '', matchDetail: '', preprocess: '', availability: UNAVAIL };
     }
     return {
         found: !!(ocr.found),
         confidence: ocr.confidence ?? null,
-        text: ocr.actual || '',
+        text: ocr.extractedText || ocr.actual || '',
+        matchDetail: ocr.matchDetail || '',
+        preprocess: ocr.preprocess || '',
         availability: AVAIL,
     };
 }
@@ -52,6 +54,9 @@ function buildOcrSignal(step) {
 function buildColorSignal(step) {
     const color = step.color_evaluation;
     if (!color) {
+        return { result: 'UNAVAILABLE', fallback_used: false, fallback_source: null, availability: UNAVAIL };
+    }
+    if (color.result === 'SKIPPED' || color.result === 'UNAVAILABLE' || color.availability === UNAVAIL) {
         return { result: 'UNAVAILABLE', fallback_used: false, fallback_source: null, availability: UNAVAIL };
     }
     if (color.result === 'ERROR') {
@@ -68,6 +73,14 @@ function buildColorSignal(step) {
 
 function buildAiSignal(step) {
     const ai = step.ai_evaluation;
+    if (step.ai_semantic_untrusted) {
+        return {
+            verdict: ai?.ai_verdict || 'UNAVAILABLE',
+            confidence: ai?.confidence ?? null,
+            reason: ai?.ai_reason || '',
+            availability: UNAVAIL,
+        };
+    }
     if (!ai || ai.ai_verdict === 'ERROR' || ai.ai_verdict === 'DISABLED' || ai.ai_verdict === 'SKIPPED' || ai.ai_verdict === 'PENDING') {
         return {
             verdict: ai?.ai_verdict || 'UNAVAILABLE',

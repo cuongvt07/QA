@@ -6,6 +6,56 @@
 const fs = require('fs');
 const path = require('path');
 
+const SSIM_COMPARE_WIDTH = parseInt(process.env.SSIM_COMPARE_WIDTH || '256', 10);
+const SSIM_MEANINGFUL_CHANGE_THRESHOLD = parseFloat(process.env.SSIM_MEANINGFUL_CHANGE_THRESHOLD || '0.985');
+
+function computeGlobalSsim(gray1, gray2) {
+    if (!gray1 || !gray2 || gray1.length === 0 || gray2.length === 0 || gray1.length !== gray2.length) {
+        return null;
+    }
+
+    const n = gray1.length;
+    let sumX = 0;
+    let sumY = 0;
+
+    for (let i = 0; i < n; i++) {
+        sumX += gray1[i];
+        sumY += gray2[i];
+    }
+
+    const muX = sumX / n;
+    const muY = sumY / n;
+
+    let sigmaX = 0;
+    let sigmaY = 0;
+    let sigmaXY = 0;
+
+    for (let i = 0; i < n; i++) {
+        const dx = gray1[i] - muX;
+        const dy = gray2[i] - muY;
+        sigmaX += dx * dx;
+        sigmaY += dy * dy;
+        sigmaXY += dx * dy;
+    }
+
+    sigmaX /= n;
+    sigmaY /= n;
+    sigmaXY /= n;
+
+    const L = 255;
+    const C1 = (0.01 * L) ** 2;
+    const C2 = (0.03 * L) ** 2;
+
+    const numerator = (2 * muX * muY + C1) * (2 * sigmaXY + C2);
+    const denominator = (muX ** 2 + muY ** 2 + C1) * (sigmaX + sigmaY + C2);
+
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+        return null;
+    }
+
+    return Math.max(0, Math.min(1, numerator / denominator));
+}
+
 /**
  * Check if preview image is loaded correctly on the page
  */
@@ -43,16 +93,99 @@ async function validatePreviewImage(page) {
         const isBlank = await canvas.evaluate((el) => {
             const ctx = el.getContext('2d');
             if (!ctx) return true;
-            const data = ctx.getImageData(0, 0, el.width, el.height).data;
-            const firstPixel = [data[0], data[1], data[2]];
-            let allSame = true;
-            for (let i = 4; i < data.length; i += 4) {
-                if (data[i] !== firstPixel[0] || data[i + 1] !== firstPixel[1] || data[i + 2] !== firstPixel[2]) {
-                    allSame = false;
-                    break;
+            if (!el.width || !el.height) return true;
+
+            const bucketTolerance = 18;
+            const patchRadius = 2;
+            const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+            const bucketize = (r, g, b) => [
+                Math.round(r / bucketTolerance),
+                Math.round(g / bucketTolerance),
+                Math.round(b / bucketTolerance)
+            ].join(':');
+
+            const readPatchAverage = (fx, fy) => {
+                const x = clamp(Math.floor(el.width * fx) - patchRadius, 0, Math.max(0, el.width - 1));
+                const y = clamp(Math.floor(el.height * fy) - patchRadius, 0, Math.max(0, el.height - 1));
+                const width = Math.max(1, Math.min(el.width - x, patchRadius * 2 + 1));
+                const height = Math.max(1, Math.min(el.height - y, patchRadius * 2 + 1));
+                const data = ctx.getImageData(x, y, width, height).data;
+
+                let sumR = 0;
+                let sumG = 0;
+                let sumB = 0;
+                let visible = 0;
+
+                for (let i = 0; i < data.length; i += 4) {
+                    const alpha = data[i + 3];
+                    if (alpha <= 8) continue;
+                    sumR += data[i];
+                    sumG += data[i + 1];
+                    sumB += data[i + 2];
+                    visible++;
+                }
+
+                if (!visible) {
+                    return null;
+                }
+
+                return [
+                    Math.round(sumR / visible),
+                    Math.round(sumG / visible),
+                    Math.round(sumB / visible)
+                ];
+            };
+
+            // Use a denser grid than before so small-but-real preview artwork
+            // doesn't get misclassified as "blank" just because it missed 9 points.
+            const sampleFractions = [];
+            for (let fy = 0.12; fy <= 0.88; fy += 0.19) {
+                for (let fx = 0.12; fx <= 0.88; fx += 0.19) {
+                    sampleFractions.push([fx, fy]);
                 }
             }
-            return allSame;
+
+            const buckets = new Set();
+            let visibleSamples = 0;
+
+            for (const [fx, fy] of sampleFractions) {
+                const avg = readPatchAverage(fx, fy);
+                if (!avg) continue;
+                visibleSamples++;
+                buckets.add(bucketize(avg[0], avg[1], avg[2]));
+                if (buckets.size >= 2) {
+                    return false;
+                }
+            }
+
+            if (visibleSamples === 0) return true;
+
+            // Fallback: inspect a modest center-biased patch for color variance.
+            // This is still cheap compared with scanning the full canvas.
+            const patchWidth = Math.max(16, Math.min(128, Math.floor(el.width * 0.35)));
+            const patchHeight = Math.max(16, Math.min(128, Math.floor(el.height * 0.35)));
+            const patchX = clamp(Math.floor((el.width - patchWidth) / 2), 0, Math.max(0, el.width - patchWidth));
+            const patchY = clamp(Math.floor((el.height - patchHeight) / 2), 0, Math.max(0, el.height - patchHeight));
+            const patch = ctx.getImageData(patchX, patchY, patchWidth, patchHeight).data;
+
+            let visiblePatchPixels = 0;
+            const patchBuckets = new Set();
+            const stride = Math.max(1, Math.floor((patchWidth * patchHeight) / 1024));
+
+            for (let px = 0, sampleIndex = 0; px < patchWidth * patchHeight; px += stride, sampleIndex++) {
+                const base = px * 4;
+                const alpha = patch[base + 3];
+                if (alpha <= 8) continue;
+                visiblePatchPixels++;
+                patchBuckets.add(bucketize(patch[base], patch[base + 1], patch[base + 2]));
+                if (patchBuckets.size >= 3) {
+                    return false;
+                }
+            }
+
+            if (visiblePatchPixels === 0) return true;
+
+            return patchBuckets.size < 2;
         });
 
         if (isBlank) {
@@ -80,7 +213,7 @@ async function calculateVisualDiff(beforePath, afterPath) {
     try {
         const fsPromises = require('fs').promises;
         if (!fs.existsSync(beforePath) || !fs.existsSync(afterPath)) {
-            return { diffPercent: -1, error: 'Screenshot file not found' };
+            return { diffPercent: -1, ssim: null, meaningfulChange: false, error: 'Screenshot file not found' };
         }
         const [beforeBuf, afterBuf] = await Promise.all([
             fsPromises.readFile(beforePath),
@@ -88,7 +221,7 @@ async function calculateVisualDiff(beforePath, afterPath) {
         ]);
         return await calculateVisualDiffBuffers(beforeBuf, afterBuf);
     } catch (error) {
-        return { diffPercent: -1, error: error.message };
+        return { diffPercent: -1, ssim: null, meaningfulChange: false, error: error.message };
     }
 }
 
@@ -99,7 +232,6 @@ async function calculateVisualDiff(beforePath, afterPath) {
 async function calculateVisualDiffBuffers(beforeBuf, afterBuf) {
     try {
         const sharp = require('sharp');
-        const { PNG } = require('pngjs');
         const pixelmatch = require('pixelmatch');
 
         // Get dimensions of both images
@@ -119,16 +251,33 @@ async function calculateVisualDiffBuffers(beforeBuf, afterBuf) {
             .raw()
             .toBuffer();
 
-        const [raw1, raw2] = await Promise.all([normalize(beforeBuf), normalize(afterBuf)]);
+        const ssimWidth = Math.max(32, Math.min(width, SSIM_COMPARE_WIDTH));
+        const ssimHeight = Math.max(32, Math.round((height / Math.max(width, 1)) * ssimWidth));
+        const normalizeGray = (buf) => sharp(buf)
+            .extract({ left: 0, top: 0, width, height })
+            .resize({ width: ssimWidth, height: ssimHeight, fit: 'fill' })
+            .greyscale()
+            .raw()
+            .toBuffer();
+
+        const [raw1, raw2, gray1, gray2] = await Promise.all([
+            normalize(beforeBuf),
+            normalize(afterBuf),
+            normalizeGray(beforeBuf),
+            normalizeGray(afterBuf),
+        ]);
 
         const diff = Buffer.alloc(width * height * 4);
         const numDiffPixels = pixelmatch(raw1, raw2, diff, width, height, { threshold: 0.1, includeAA: false });
 
         const totalPixels = width * height;
         const diffPercent = parseFloat(((numDiffPixels / totalPixels) * 100).toFixed(2));
-        return { diffPercent, error: null };
+        const ssimRaw = computeGlobalSsim(gray1, gray2);
+        const ssim = typeof ssimRaw === 'number' ? parseFloat(ssimRaw.toFixed(4)) : null;
+        const meaningfulChange = diffPercent > 0.01 || (typeof ssim === 'number' && ssim < SSIM_MEANINGFUL_CHANGE_THRESHOLD);
+        return { diffPercent, ssim, meaningfulChange, error: null };
     } catch (error) {
-        return { diffPercent: -1, error: error.message };
+        return { diffPercent: -1, ssim: null, meaningfulChange: false, error: error.message };
     }
 }
 

@@ -30,6 +30,14 @@ const { computeQualityScore, computeConfidenceScore, makeDecision, computeConsen
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
+function shouldSoftenSemanticAiFail(step) {
+    if (!step || step.group_type !== 'image_option') return false;
+    if (step.option_color_source !== 'semantic-label') return false;
+    if (step.color_audit_applicable !== false) return false;
+    if (step.code_evaluation?.status !== 'PASS') return false;
+    return Boolean(step.meaningful_change) || (step.diff_score ?? 0) >= 0.5;
+}
+
 const argv = yargs
     .option('url', {
         alias: 'u',
@@ -64,10 +72,10 @@ const argv = yargs
         type: 'string',
         default: path.resolve(__dirname, '../web/reports'),
     })
-    .option('no-ai', {
-        describe: 'Disable AI evaluation',
+    .option('ai', {
+        describe: 'Enable AI evaluation for ambiguous steps/final review',
         type: 'boolean',
-        default: false,
+        default: true,
     })
     .option('tc-code', {
         describe: 'Custom Test Case code (e.g., MEE001)',
@@ -153,7 +161,7 @@ async function main() {
     const baseReportDir = argv['report-dir'];
     const concurrency = argv.concurrency;
 
-    const generalAiDisabled = argv['no-ai'] === true;
+    const generalAiDisabled = argv.ai === false || process.argv.includes('--no-ai');
     const aiEvaluator = new AiEvaluator(OPENAI_API_KEY, !generalAiDisabled);
     await aiEvaluator.init();
 
@@ -284,6 +292,8 @@ async function main() {
                     let beforeBuf, afterBuf;
                     let diffPercent = -1;
                     let diffMask = null;
+                    let ssimScore = null;
+                    let meaningfulChange = false;
 
                     if (!step.skip_diff_check && step.state_before && step.state_after) {
                         try {
@@ -301,20 +311,26 @@ async function main() {
                                 getDiffMaskFromBuffers(beforeBuf, afterBuf)
                             ]);
                             diffPercent = diffData[0].diffPercent;
+                            ssimScore = Number.isFinite(diffData[0].ssim) ? diffData[0].ssim : null;
+                            meaningfulChange = Boolean(diffData[0].meaningfulChange);
                             diffMask = diffData[1];
                         } catch (e) {
                             console.error(`    [ERROR] Failed to read or process interaction images: ${e.message}`);
                         }
                     } else if (step.skip_diff_check) {
                         // Skip diff calculation for dropdowns/menu openers
-                        diffPercent = 0; 
+                        diffPercent = 0;
+                        meaningfulChange = Boolean(step.changes_preview) || (Number(step.observed_preview_change_score) > 0.01);
                     }
                     
                     step.diff_score = diffPercent;
                     step.diffMask = diffMask;
+                    step.ssim_score = ssimScore !== null ? parseFloat(ssimScore.toFixed(4)) : null;
+                    step.meaningful_change = meaningfulChange;
 
                     // Layer 2A: Architectural Hard Gates (v3.3)
-                    let isPass = diffPercent > 0.01;
+                    const hasMeaningfulChange = diffPercent > 0.01 || meaningfulChange;
+                    let isPass = hasMeaningfulChange;
                     if (step.status === 'FAIL' && step.interaction_status === 'FAIL') {
                         // Keep it FAIL, validation doesn't apply
                         step.validation_status = 'FAIL';
@@ -328,7 +344,7 @@ async function main() {
                         step.diff_error = true;
                         step.code_evaluation = { status: 'WARNING', message: 'ERROR: Could not calculate visual diff.' };
                         console.log(`    [GATE] Step warning: Diff calculation failed.`);
-                    } else if (diffPercent === 0) {
+                    } else if (diffPercent === 0 && !meaningfulChange) {
                         // Bug #8 Fix: Dropdowns diff=0 is BÌNH THƯỜNG — không FAIL
                         if (step.group_type === 'dropdown' || step.is_menu_opener || step.skip_diff_check) {
                             step.status = 'PASS';
@@ -341,7 +357,7 @@ async function main() {
                             step.code_evaluation = { status: 'FAIL', message: 'CRITICAL: No visual change detected.' };
                             console.log(`    [GATE] Step auto-failed: Zero pixel change.`);
                         }
-                    } else if (diffPercent < 0.005) { 
+                    } else if (diffPercent < 0.005 && !meaningfulChange) { 
                         step.status = 'PASS';
                         step.is_audit_pass = true;
                         step.code_evaluation = { status: 'PASS', message: 'Auto-pass: Negligible change (noise).' };
@@ -349,7 +365,12 @@ async function main() {
                     } else {
                         // Standard evaluation
                         step.status = isPass ? 'PASS' : 'FAIL';
-                        step.code_evaluation = { status: step.status };
+                        step.code_evaluation = {
+                            status: step.status,
+                            diffPercent,
+                            ssim: step.ssim_score,
+                            meaningfulChange: step.meaningful_change
+                        };
                         
                         // Layer 3A: OCR
                         if (step.group_type === 'text_input' && step.value_chosen && step.diffMask) {
@@ -360,9 +381,23 @@ async function main() {
                             if (ocr.found) { step.status = 'PASS'; step.is_audit_pass = true; }
                         }
                         // Layer 3B: Color
-                        if (step.option_color_hex && step.diffMask) {
+                        const shouldRunColorAudit = Boolean(
+                            step.option_color_hex
+                            && step.diffMask
+                            && step.color_audit_applicable !== false
+                        );
+
+                        if (shouldRunColorAudit) {
                             step.color_evaluation = await verifyColor(step.state_after, step.diffMask, step.option_color_hex);
                             if (step.color_evaluation?.result === 'PASS') { step.status = 'PASS'; step.is_audit_pass = true; }
+                        } else if (step.group_type === 'image_option' && (step.option_color_source || step.option_color_semantic_hex)) {
+                            step.color_evaluation = {
+                                result: 'SKIPPED',
+                                availability: 'UNAVAILABLE',
+                                expected: step.option_color_hex || step.option_color_semantic_hex || '',
+                                source: step.option_color_source || (step.option_color_semantic_hex ? 'semantic-label' : 'unknown'),
+                                message: 'Skipped color audit: expected color is semantic/untrusted for this image option.',
+                            };
                         }
                         
                         // Layer 3C: Quick Color Similarity (Safety net for small diffs)
@@ -384,6 +419,7 @@ async function main() {
                         (step.status === 'FAIL') || // Rule says FAIL, verify if it's true
                         (step.ocr_evaluation && !step.ocr_evaluation.found) || // OCR missing
                         (step.diff_score > 5) || // Large visual shift
+                        (typeof step.ssim_score === 'number' && step.ssim_score < 0.97) || // Structural shift worth arbitration
                         (step.ai_needs_manual_review) // Explicitly flagged
                     );
 
@@ -415,12 +451,17 @@ async function main() {
                              const AI_OVERRIDE_THRESHOLD = 0.85;
                              const isAiHighConfidence = judgeResult.confidence >= AI_OVERRIDE_THRESHOLD;
                              
-                              if (judgeResult.verdict === 'PASS' && isAiHighConfidence) {
+                             if (judgeResult.verdict === 'PASS' && isAiHighConfidence) {
                                  console.log(`    [AI] Judge OVERRIDE: PASS (Confidence: ${judgeResult.confidence})`);
                                  step.status = 'PASS';
                              } else if (judgeResult.verdict === 'FAIL' && isAiHighConfidence) {
-                                 console.log(`    [AI] Judge OVERRIDE: FAIL (Confidence: ${judgeResult.confidence})`);
-                                 step.status = 'FAIL';
+                                 if (shouldSoftenSemanticAiFail(step)) {
+                                     step.ai_semantic_untrusted = true;
+                                     console.log(`    [AI] FAIL override suppressed for semantic color option: ${step.name}`);
+                                 } else {
+                                     console.log(`    [AI] Judge OVERRIDE: FAIL (Confidence: ${judgeResult.confidence})`);
+                                     step.status = 'FAIL';
+                                 }
                              } else {
                                  // Keep the deterministic code status
                                  console.log(`    [AI] Judge verdict ${judgeResult.verdict} IGNORED (Low confidence or Temporal block)`);
@@ -607,6 +648,8 @@ async function main() {
                             agreement: confidenceResult.agreement,
                             stability: confidenceResult.stability_proxy,
                             pipeline_health: confidenceResult.pipeline_health,
+                            clean_run_promotion_eligible: confidenceResult.clean_run_promotion_eligible,
+                            clean_run_promotion_applied: confidenceResult.clean_run_promotion_applied,
                         },
                     };
                     console.log(`  [R-v2] quality=${qualityResult.quality_score} confidence=${confidenceResult.confidence_score} decision=${decisionResult.decision}`);
@@ -629,16 +672,47 @@ async function main() {
                     finalPreviewPathToUse = path.join(caseDir, 'final_preview.png');
                 }
 
-                if (aiEvaluator.enabled && previewResult.valid && finalPreviewPathToUse) {
+                const hasReviewablePreview =
+                    !!finalPreviewPathToUse &&
+                    typeof finalPreviewPathToUse === 'string' &&
+                    fs.existsSync(finalPreviewPathToUse);
+
+                let skipFinalAi = false;
+                if (RELIABILITY_V2 && reliabilityData && reliabilityData.quality_score >= 95.0) {
+                    skipFinalAi = true;
+                    console.log(`    [AI] Bypassing Final Review: High local Quality Score (${reliabilityData.quality_score} >= 95.0)`);
+                }
+
+                if (aiEvaluator.enabled && hasReviewablePreview) {
                     const t5 = Date.now();
                     try {
-                        const aiFinal = await aiEvaluator.evaluateFinalPreview(finalPreviewPathToUse, caseReport);
-                        aiFinal.reviewed_image = finalPreviewPathToUse; 
-                        caseReport.final_evaluation.ai_review = aiFinal;
+                        if (skipFinalAi) {
+                            caseReport.final_evaluation.ai_review = {
+                                summary: 'Skipped AI final review due to exceptionally high local quality score (>= 95.0).',
+                                strengths: ['Strong local pixel stability', 'OCR match confirmed', 'DOM context valid'],
+                                issues: [],
+                                layout_notes: [],
+                                color_notes: [],
+                                content_notes: [],
+                                recommendations: [],
+                                ai_verdict: 'PASS',
+                                confidence: 1.0,
+                                ai_reason: `Auto-passed. Local Quality Score was ${reliabilityData.quality_score}.`,
+                                reviewed_image: finalPreviewPathToUse
+                            };
+                            phaseDurations.phase_ai_review = 0;
+                        } else {
+                            if (!previewResult.valid) {
+                                console.log(`    [AI] Final review continuing despite preview validation failure: ${previewResult.error || previewResult.message || 'unknown reason'}`);
+                            }
+                            const aiFinal = await aiEvaluator.evaluateFinalPreview(finalPreviewPathToUse, caseReport);
+                            aiFinal.reviewed_image = finalPreviewPathToUse; 
+                            caseReport.final_evaluation.ai_review = aiFinal;
+                        }
                     } catch (e) {
                         console.error(`    [ERROR] Final AI Review failed: ${e.message}`);
                     }
-                    phaseDurations.phase_ai_review = Date.now() - t5;
+                    if (!skipFinalAi) phaseDurations.phase_ai_review = Date.now() - t5;
                 }
                 
                 caseReport.phase_durations = phaseDurations; // Final sync

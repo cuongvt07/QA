@@ -19,14 +19,14 @@
 const fs = require('fs');
 const path = require('path');
 
-const OPENAI_MODEL_FINAL = 'gpt-4o';
+const OPENAI_MODEL_FINAL = process.env.FINAL_REVIEW_MODEL || 'gpt-4o-mini';
 const OPENAI_MODEL_STEP = 'gpt-4o-mini';
 
 class AiEvaluator {
     constructor(apiKey, generalAiEnabled = true) {
         this.apiKey = apiKey;
-        this.enabled = !!apiKey;
         this.generalAiEnabled = generalAiEnabled && !!apiKey;
+        this.enabled = this.generalAiEnabled;
         this.client = null;
         this.usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 };
         
@@ -54,13 +54,14 @@ class AiEvaluator {
     }
 
     async init() {
-        if (!this.enabled) return;
+        if (!this.generalAiEnabled) return;
         try {
             const { OpenAI } = require('openai');
             this.client = new OpenAI({ apiKey: this.apiKey });
         } catch (error) {
             console.warn('[WARN] AI Evaluator: Failed to initialize openai:', error.message);
             this.enabled = false;
+            this.generalAiEnabled = false;
         }
     }
 

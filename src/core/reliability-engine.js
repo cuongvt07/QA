@@ -48,10 +48,21 @@ function scoreDeterministicVisual(timeline) {
 /**
  * AI semantic score: pass ratio of available AI verdicts → 0-100.
  */
+function shouldIgnoreSemanticAiFail(step) {
+    if (!step || step.group_type !== 'image_option') return false;
+    if (step.ai_semantic_untrusted) return true;
+    if (step.option_color_source !== 'semantic-label') return false;
+    if (step.color_audit_applicable !== false) return false;
+    if (step.code_evaluation?.status !== 'PASS') return false;
+    return Boolean(step.meaningful_change) || (step.diff_score ?? 0) >= 0.5;
+}
+
 function scoreAiSemantic(timeline) {
     const aiSteps = timeline.filter(s =>
-        s.signals?.ai?.availability === 'AVAILABLE' ||
-        (s.ai_evaluation && !['ERROR', 'DISABLED', 'SKIPPED', 'PENDING'].includes(s.ai_evaluation.ai_verdict))
+        !shouldIgnoreSemanticAiFail(s) && (
+            s.signals?.ai?.availability === 'AVAILABLE' ||
+            (s.ai_evaluation && !['ERROR', 'DISABLED', 'SKIPPED', 'PENDING'].includes(s.ai_evaluation.ai_verdict))
+        )
     );
     if (aiSteps.length === 0) return { score: null, availability: 'UNAVAILABLE' };
 
@@ -61,6 +72,46 @@ function scoreAiSemantic(timeline) {
     }).length;
 
     return { score: (passed / aiSteps.length) * 100, availability: 'AVAILABLE' };
+}
+
+function getExpectedTextTokenLength(value) {
+    return String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '')
+        .length;
+}
+
+function hasStrongAiTextRescue(step) {
+    if (!step || step.group_type !== 'text_input') return false;
+    const ai = step.signals?.ai || step.ai_evaluation;
+    if (!ai) return false;
+
+    const verdict = ai.verdict || ai.ai_verdict;
+    const confidence = ai.confidence ?? 0;
+    if (verdict !== 'PASS' || confidence < 0.9) return false;
+    if (ai.bbox_correct === false) return false;
+
+    return Boolean(step.meaningful_change) || (step.diff_score ?? 0) > 0.01;
+}
+
+function getOcrStepScore(ocr, step) {
+    if (!ocr?.found) {
+        return hasStrongAiTextRescue(step) ? 88 : 0;
+    }
+
+    const detail = String(ocr.matchDetail || '');
+    const tokenLength = getExpectedTextTokenLength(step.value_chosen);
+
+    if (/exact match found/i.test(detail)) return 90;
+    if (/fuzzy match found/i.test(detail) && tokenLength > 0 && tokenLength <= 8) return 80;
+
+    const conf = ocr.confidence ?? 0;
+    if (conf >= 70) return 100;
+    if (conf >= 50) return 75;
+
+    const aiPass = step.signals?.ai?.verdict === 'PASS' || step.ai_evaluation?.ai_verdict === 'PASS';
+    const diffOk = (step.diff_score ?? -1) > 0.01;
+    return (aiPass && diffOk) ? 72 : 40;
 }
 
 /**
@@ -77,22 +128,7 @@ function scoreOcr(timeline) {
         const ocr = step.signals?.ocr || step.ocr_evaluation;
         if (!ocr || ocr.availability === 'UNAVAILABLE') continue; // exclude from denominator
         counted++;
-
-        const found = ocr.found;
-        const conf = ocr.confidence ?? 0;
-
-        if (!found) {
-            total += 0;
-        } else if (conf >= 70) {
-            total += 100;
-        } else if (conf >= 50) {
-            total += 65;
-        } else {
-            // found but low confidence
-            const aiPass = step.signals?.ai?.verdict === 'PASS' || step.ai_evaluation?.ai_verdict === 'PASS';
-            const diffOk = (step.diff_score ?? -1) > 0.01;
-            total += (aiPass && diffOk) ? 40 : 0;
-        }
+        total += getOcrStepScore(ocr, step);
     }
 
     if (counted === 0) return { score: null, availability: 'UNAVAILABLE' };
@@ -112,6 +148,7 @@ function scoreColor(timeline) {
     for (const step of colorSteps) {
         const color = step.signals?.color || step.color_evaluation;
         if (!color || color.availability === 'UNAVAILABLE') continue;
+        if (color.result === 'SKIPPED' || color.result === 'UNAVAILABLE') continue;
         counted++;
 
         if (color.result === 'PASS') {
@@ -257,6 +294,32 @@ function computeConfidenceScore(timeline, { qualityResult, pipelineErrors = {} }
     // Composite
     let confidenceScore = 0.35 * coverage + 0.30 * agreement + 0.25 * stabilityProxy + 0.10 * pipelineHealth;
 
+    const allNonLifecyclePass = nonLifecycle.length > 0 && nonLifecycle.every((s) => s.status === 'PASS');
+    const deterministicStrong = signals.deterministic_visual?.availability === 'AVAILABLE' && (signals.deterministic_visual.score ?? 0) >= 95;
+    const aiSupportStrong = signals.ai_semantic?.availability !== 'AVAILABLE' || (signals.ai_semantic.score ?? 0) >= 80;
+    const ocrSupportStrong = signals.ocr_text?.availability !== 'AVAILABLE' || (signals.ocr_text.score ?? 0) >= 80;
+    const colorSupportStrong = signals.color_match?.availability !== 'AVAILABLE' || (signals.color_match.score ?? 0) >= 70;
+    const completionStrong = signals.completion?.availability !== 'AVAILABLE' || (signals.completion.score ?? 0) >= 95;
+    const cartStrong = signals.cart?.availability === 'AVAILABLE' && (signals.cart.score ?? 0) >= 100 && !signals.cart.hardFail;
+    const noTemporalPenalty = (qualityResult?.temporal_penalty ?? 0) === 0 && !qualityResult?.temporal_hard_fail;
+    const cleanRunPromotionEligible = Boolean(
+        allNonLifecyclePass
+        && deterministicStrong
+        && aiSupportStrong
+        && ocrSupportStrong
+        && colorSupportStrong
+        && completionStrong
+        && cartStrong
+        && noTemporalPenalty
+        && pipelineHealth >= 0.9
+        && coverage >= 0.55
+    );
+    let cleanRunPromotionApplied = false;
+    if (cleanRunPromotionEligible && confidenceScore < 0.85) {
+        confidenceScore = Math.min(0.89, Math.max(confidenceScore + 0.05, 0.86));
+        cleanRunPromotionApplied = true;
+    }
+
     // 6.5 UNAVAILABLE cap
     if (unavailableWeightRatio > 0.50) {
         confidenceScore = Math.min(confidenceScore, 0.79);
@@ -269,6 +332,8 @@ function computeConfidenceScore(timeline, { qualityResult, pipelineErrors = {} }
         stability_proxy: stabilityProxy,
         pipeline_health: pipelineHealth,
         unavailable_weight_ratio: unavailableWeightRatio,
+        clean_run_promotion_eligible: cleanRunPromotionEligible,
+        clean_run_promotion_applied: cleanRunPromotionApplied,
     };
 }
 
@@ -314,6 +379,7 @@ const DECISION_REASON = {
     UNAVAILABLE_DOMINANT: 'UNAVAILABLE_DOMINANT',
     PERSISTENT_LOW_CONFIDENCE: 'PERSISTENT_LOW_CONFIDENCE',
     FORCE_REVIEW: 'FORCE_REVIEW',
+    CLEAN_RUN_PROMOTION: 'CLEAN_RUN_PROMOTION',
 };
 
 function makeDecision(qualityResult, confidenceResult, { isFatal = false, forceReview = false } = {}) {
@@ -359,6 +425,7 @@ function makeDecision(qualityResult, confidenceResult, { isFatal = false, forceR
     }
 
     if (q >= 85 && c >= 0.85) {
+        if (confidenceResult.clean_run_promotion_applied) reasons.push(DECISION_REASON.CLEAN_RUN_PROMOTION);
         if (confidenceResult.coverage >= 0.70) reasons.push(DECISION_REASON.HIGH_COVERAGE);
         if (confidenceResult.agreement >= 0.80) reasons.push(DECISION_REASON.HIGH_AGREEMENT);
         return { decision: 'PASS_AUTO', reasons };

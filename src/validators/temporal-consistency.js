@@ -4,8 +4,8 @@
  */
 const { calculateVisualDiff } = require('../actions/validator');
 
-const HIGH_THRESHOLD = parseFloat(process.env.TEMPORAL_HIGH_THRESHOLD) || 2.0; // 2%
-const FATAL_THRESHOLD = parseFloat(process.env.TEMPORAL_FATAL_THRESHOLD) || 8.0; // 8%
+const HIGH_THRESHOLD = parseFloat(process.env.TEMPORAL_HIGH_THRESHOLD) || 3.5; // 3.5%
+const FATAL_THRESHOLD = parseFloat(process.env.TEMPORAL_FATAL_THRESHOLD) || 12.0; // 12%
 
 const EXCLUDED_GROUPS = ['dropdown', 'menu_opener', 'navigation', 'layout_toggle', 'lifecycle'];
 

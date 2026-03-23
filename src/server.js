@@ -3,10 +3,13 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const cron = require('node-cron');
 const { spawn } = require('child_process');
 const repo = require('./repository');
 const PQueue = require('p-queue').default;
 const crawler = require('./crawler');
+const { generateDailyExcel } = require('./utils/excel');
+const { sendDailyReport } = require('./utils/mailer');
 
 const app = express();
 const PORT = process.env.PORT || 8090;
@@ -15,7 +18,14 @@ const WEB_DIR = path.resolve(__dirname, '../web');
 const REPORTS_DIR = path.join(WEB_DIR, 'reports');
 
 // --- Queue Setup ---
-const queue = new PQueue({ concurrency: 5 });
+function resolveServerQueueConcurrency() {
+    const raw = process.env.RUN_QUEUE_CONCURRENCY || process.env.SERVER_QUEUE_CONCURRENCY || 5;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) return 5;
+    return Math.min(parsed, 20);
+}
+
+const queue = new PQueue({ concurrency: resolveServerQueueConcurrency() });
 // Track queue events to broadcast status changes
 queue.on('active', () => {
     console.log(`[QUEUE] Task started. Size: ${queue.size}  Pending: ${queue.pending}`);
@@ -143,6 +153,17 @@ function resolveCliConcurrency(payload = {}) {
     return Math.min(parsed, 8);
 }
 
+function resolveDailyNewLimit(payload = {}) {
+    const rawValue = payload.limit
+        ?? process.env.DAILY_NEW_TC_LIMIT
+        ?? process.env.DAILY_BATCH_LIMIT
+        ?? 20;
+
+    const parsed = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) return 20;
+    return Math.min(parsed, 500);
+}
+
 function buildCliArgs(payload) {
     const concurrency = resolveCliConcurrency(payload);
     const args = ['src/cli.js', `--url=${payload.url}`, `--concurrency=${concurrency}`];
@@ -200,6 +221,8 @@ async function startEngineRun(payload) {
         output: '',
         exitCode: null,
         startedAt: null,
+        testCaseId: payload.testCaseId || null,
+        testName: payload.testName || null,
     });
 
     // Notify clients that a test has been queued
@@ -419,6 +442,87 @@ app.post('/api/test-cases/:id/run', async (req, res) => {
     }
 });
 
+app.post('/api/batches/daily-new', async (req, res) => {
+    try {
+        const limit = resolveDailyNewLimit(req.body || {});
+        const headless = req.body?.headless;
+        const useAi = req.body?.useAi;
+        const concurrency = req.body?.concurrency;
+        const customImageFilename = req.body?.customImageFilename;
+
+        const batchId = makeId('BATCH');
+        const candidates = await repo.getNewTestCasesForDaily(limit);
+
+        if (!Array.isArray(candidates) || candidates.length === 0) {
+            return res.json({
+                message: 'No new test cases available for daily run',
+                batchId,
+                mode: 'new_only',
+                requestedLimit: limit,
+                selectedCount: 0,
+                queuedCount: 0,
+                queueConcurrency: queue.concurrency
+            });
+        }
+
+        const queued = [];
+        const skipped = [];
+
+        for (const tc of candidates) {
+            if (activeRuns.size > 0) {
+                const alreadyActive = Array.from(activeRuns.keys()).some((runId) => {
+                    const active = activeRuns.get(runId);
+                    return active && String(active.testCaseId || '') === String(tc.id);
+                });
+                if (alreadyActive) {
+                    skipped.push({ id: tc.id, name: tc.name, reason: 'already-active' });
+                    continue;
+                }
+            }
+
+            const started = await startEngineRun({
+                url: tc.url,
+                tcCode: sanitizeTcCode(tc.tc_code || tc.name),
+                concurrency,
+                useAi,
+                headless,
+                customImageFilename,
+                testCaseId: tc.id,
+                testName: tc.name,
+                batchId,
+                source: 'daily-new-batch-api'
+            });
+
+            if (started.error) {
+                skipped.push({ id: tc.id, name: tc.name, reason: started.error });
+                continue;
+            }
+
+            queued.push({
+                test_case_id: tc.id,
+                name: tc.name,
+                runId: started.runId
+            });
+        }
+
+        res.json({
+            message: `Queued ${queued.length} new test case(s)`,
+            batchId,
+            mode: 'new_only',
+            requestedLimit: limit,
+            selectedCount: candidates.length,
+            queuedCount: queued.length,
+            skippedCount: skipped.length,
+            queueConcurrency: queue.concurrency,
+            cliCaseConcurrency: resolveCliConcurrency(req.body || {}),
+            queued,
+            skipped
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.delete('/api/test-cases/:id', async (req, res) => {
     try {
         const tc = await repo.getTestCaseById(req.params.id);
@@ -448,7 +552,7 @@ app.get('/api/runs', async (req, res) => {
         const mapped = runs.map(r => {
             const active = activeRuns.get(r.id);
             if (!active) return r;
-            return { ...r, status: 'RUNNING', output: active.output };
+            return { ...r, status: 'RUNNING', execution_status: 'RUNNING', output: active.output };
         });
         res.json(mapped);
     } catch (error) {
@@ -462,7 +566,9 @@ app.get('/api/runs/:runId', async (req, res) => {
         if (!run) return res.status(404).json({ error: 'Not found' });
 
         const active = activeRuns.get(run.id);
-        const displayRun = active ? { ...run, status: 'RUNNING', output: active.output } : run;
+        const displayRun = active
+            ? { ...run, status: 'RUNNING', execution_status: 'RUNNING', output: active.output }
+            : run;
         
         const report = await repo.getReportByRunId(run.id);
         res.json({ ...displayRun, report: report ? report.content : null });
@@ -681,6 +787,7 @@ app.post('/api/settings', (req, res) => {
         }
 
         console.log('[SETTINGS] Successfully saved.');
+        scheduleDailyReport(); // Restart cron if time changed
         res.json({ message: 'Settings saved successfully' });
     } catch (error) {
         console.error('[SETTINGS] Error saving settings:', error.message);
@@ -821,6 +928,68 @@ setInterval(async () => {
         console.error('[MAINTENANCE] Cleanup failed:', err.message);
     }
 }, 24 * 60 * 60 * 1000);
+
+let dailyReportJob = null;
+function scheduleDailyReport() {
+    if (dailyReportJob) {
+        dailyReportJob.stop();
+        dailyReportJob = null;
+    }
+
+    const reportTime = process.env.DAILY_REPORT_TIME;
+    if (!reportTime || reportTime.indexOf(':') === -1) return;
+
+    const [hh, mm] = reportTime.split(':');
+    if (!hh || !mm) return;
+
+    const cronExpr = `${parseInt(mm, 10)} ${parseInt(hh, 10)} * * *`;
+    console.log(`[SCHEDULE] Scheduled daily report at ${reportTime} (${cronExpr})`);
+
+    dailyReportJob = cron.schedule(cronExpr, async () => {
+        console.log(`[SCHEDULE] Triggering daily report for time: ${reportTime}`);
+        try {
+            // "Stops pending batch runs"
+            if (queue.size > 0 || queue.pending > 0) {
+                console.log(`[SCHEDULE] Stopping ${queue.size} pending batch runs...`);
+                queue.clear();
+            }
+
+            const allRuns = await repo.getAllRuns();
+            const dateStr = new Date().toISOString().split('T')[0];
+            
+            const todaysRuns = allRuns.filter(r => {
+                if (!r.created_at && !r.test_time && !r.started_at) return false;
+                const d = new Date(r.created_at || r.test_time || r.started_at);
+                if (isNaN(d.getTime())) return false;
+                return d.toISOString().split('T')[0] === dateStr;
+            });
+
+            if (todaysRuns.length === 0) {
+                console.log('[SCHEDULE] No runs today. Skipping email report.');
+                return;
+            }
+
+            let passCount = 0, failCount = 0;
+            todaysRuns.forEach(r => {
+                const s = String(r.status).toUpperCase();
+                if (s === 'PASS') passCount++;
+                else if (['FAIL', 'FATAL'].includes(s)) failCount++;
+            });
+
+            const tmpDir = path.join(__dirname, '../tmp');
+            const failedRuns = todaysRuns.filter(r => ['FAIL', 'FATAL'].includes(String(r.status).toUpperCase()));
+            const excelPath = await generateDailyExcel(failedRuns.length > 0 ? failedRuns : todaysRuns, tmpDir);
+            
+            const success = await sendDailyReport(excelPath, passCount, failCount, todaysRuns.length);
+            if (success && fs.existsSync(excelPath)) {
+                fs.unlinkSync(excelPath);
+            }
+        } catch (err) {
+            console.error('[SCHEDULE] Failed to generate/send daily report:', err);
+        }
+    });
+}
+scheduleDailyReport();
 
 app.listen(PORT, () => {
     console.log(`\nQA Server (MySQL) running on http://localhost:${PORT}\n`);

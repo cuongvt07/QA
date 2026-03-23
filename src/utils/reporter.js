@@ -31,6 +31,50 @@ function createCaseDir(tcDir, caseIndex) {
     return caseDir;
 }
 
+function getExpectedTextTokenLength(value) {
+    return String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '')
+        .length;
+}
+
+function hasStrongAiTextRescue(step) {
+    if (!step || step.group_type !== 'text_input') return false;
+    const aiRes = step.ai_evaluation;
+    if (!aiRes || aiRes.ai_verdict !== 'PASS') return false;
+    if ((aiRes.confidence ?? 0) < 0.9) return false;
+    if (aiRes.bbox_correct === false) return false;
+    return Boolean(step.meaningful_change) || (step.diff_score ?? 0) > 0.01;
+}
+
+function shouldIgnoreSemanticAiFail(step) {
+    if (!step || step.group_type !== 'image_option') return false;
+    if (step.ai_semantic_untrusted) return true;
+    if (step.option_color_source !== 'semantic-label') return false;
+    if (step.color_audit_applicable !== false) return false;
+    if (step.code_evaluation?.status !== 'PASS') return false;
+    return Boolean(step.meaningful_change) || (step.diff_score ?? 0) >= 0.5;
+}
+
+function getOcrCredit(ocrRes, expectedText, step) {
+    if (!ocrRes?.found) {
+        return hasStrongAiTextRescue(step) ? 0.88 : 0;
+    }
+
+    const confP = Math.max(0, Math.min(100, ocrRes.confidence || 0)) / 100;
+    let credit = 0.5 + (0.5 * confP);
+    const detail = String(ocrRes.matchDetail || '');
+    const tokenLength = getExpectedTextTokenLength(expectedText);
+
+    if (/exact match found/i.test(detail)) {
+        credit = Math.max(credit, 0.9);
+    } else if (/fuzzy match found/i.test(detail) && tokenLength > 0 && tokenLength <= 8) {
+        credit = Math.max(credit, 0.8);
+    }
+
+    return Math.min(1, credit);
+}
+
 /**
  * Build report JSON for a single case within a test
  */
@@ -134,20 +178,26 @@ function buildCaseReport({
                     // Normal OCR calc using found + confidence instead of similarity
                     // Base 50% for finding it, up to 50% based on confidence 0-100
                     ocrCounted++;
-                    if (ocrRes.found) {
-                        const confP = Math.max(0, Math.min(100, ocrRes.confidence || 0)) / 100;
-                        ocrRawTotal += 0.5 + (0.5 * confP);
-                    }
+                    ocrRawTotal += getOcrCredit(ocrRes, s.value_chosen, s);
                 }
             }
         });
         ocrScore = ocrCounted > 0 ? (ocrRawTotal / ocrCounted) * ocrWeight : ocrWeight;
         if (ocrScore < ocrWeight) {
+            const missingOcrSteps = ocrSummary
+                .filter(s => !s.ocr_evaluation?.found && !hasStrongAiTextRescue(s))
+                .map(s => s.name);
+            const lowConfidenceHits = ocrSummary.filter((s) => {
+                const ocrRes = s.ocr_evaluation;
+                return (ocrRes?.found || hasStrongAiTextRescue(s)) && getOcrCredit(ocrRes, s.value_chosen, s) < 0.99;
+            }).map(s => s.name);
             score_deduction_reasons.push({
                 dimension: 'OCR',
                 deducted_points: Math.round(ocrWeight - ocrScore),
-                reason: 'Text input verification failed or has low confidence',
-                evidence: ocrSummary.filter(s => !s.ocr_evaluation?.found).map(s => s.name).join(', ')
+                reason: missingOcrSteps.length > 0
+                    ? 'Text input verification failed or has low confidence'
+                    : 'Text recognized, but OCR confidence remains conservative',
+                evidence: (missingOcrSteps.length > 0 ? missingOcrSteps : lowConfidenceHits).join(', ')
             });
         }
     } else {
@@ -160,6 +210,7 @@ function buildCaseReport({
     let aiScoreValue = 0;
     if (customizationSteps.length > 0) {
         const aiScoredSteps = customizationSteps.filter((s) => {
+            if (shouldIgnoreSemanticAiFail(s)) return false;
             const verdict = s.ai_evaluation?.ai_verdict;
             return verdict === 'PASS' || verdict === 'FAIL' || s.is_audit_pass;
         });
