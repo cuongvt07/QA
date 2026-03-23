@@ -9,6 +9,141 @@ class Repository {
         return dt.toISOString().slice(0, 19).replace('T', ' ');
     }
 
+    static normalizeConfidenceScore(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return null;
+        if (n > 1) return Math.min(1, n / 100);
+        if (n < 0) return 0;
+        return n;
+    }
+
+    static normalizeReasonCodes(value) {
+        if (Array.isArray(value)) return value.filter(Boolean);
+        if (typeof value === 'string' && value.trim()) {
+            return value.split(/[;,]/).map((v) => v.trim()).filter(Boolean);
+        }
+        return [];
+    }
+
+    static decisionToResultStatus(decision) {
+        const normalized = String(decision || '').toUpperCase();
+        if (normalized === 'PASS_AUTO' || normalized === 'PASS' || normalized === 'COMPLETED') return 'PASS';
+        if (normalized === 'FAIL_AUTO' || normalized === 'FAIL' || normalized === 'FAILED') return 'FAIL';
+        if (normalized === 'FATAL') return 'FATAL';
+        if (normalized === 'REVIEW') return 'REVIEW';
+        return '';
+    }
+
+    static classifyCaseOutcome(caseReport) {
+        const decision = this.decisionToResultStatus(caseReport?.decision);
+        if (decision) return decision;
+
+        const status = String(caseReport?.status || '').toUpperCase();
+        if (status === 'PASS') return 'PASS';
+        if (status === 'REVIEW') return 'REVIEW';
+        if (status === 'FAIL' || status === 'FATAL') return 'FAIL';
+        return '';
+    }
+
+    static extractReportMetadata(reportContent, fallbackRow = {}) {
+        const content = typeof reportContent === 'string' ? JSON.parse(reportContent) : reportContent;
+        const cases = Array.isArray(content?.cases) ? content.cases : [];
+        const counts = cases.reduce((acc, caseReport) => {
+            const outcome = this.classifyCaseOutcome(caseReport);
+            if (outcome === 'PASS') acc.passed += 1;
+            else if (outcome === 'REVIEW') acc.review += 1;
+            else if (outcome === 'FAIL') acc.failed += 1;
+            return acc;
+        }, { passed: 0, failed: 0, review: 0 });
+
+        const decision = content?.decision || '';
+        const reportStatus =
+            content?.report_status ||
+            content?.result_status ||
+            content?.status ||
+            this.decisionToResultStatus(decision) ||
+            '';
+
+        const rawScore = Number.isFinite(Number(content?.raw_score))
+            ? Number(content.raw_score)
+            : (Number.isFinite(Number(content?.quality_score)) ? Number(content.quality_score) : Number(fallbackRow.score) || 0);
+
+        const qualityScore = Number.isFinite(Number(content?.quality_score))
+            ? Number(content.quality_score)
+            : rawScore;
+
+        const finalScore = Number.isFinite(Number(content?.score))
+            ? Number(content.score)
+            : (Number.isFinite(Number(fallbackRow.score)) ? Number(fallbackRow.score) : qualityScore);
+
+        return {
+            report_status: reportStatus,
+            result_status: reportStatus || this.decisionToResultStatus(decision),
+            decision,
+            reason_codes: this.normalizeReasonCodes(content?.reason_codes || content?.decision_reason_codes),
+            raw_score: rawScore,
+            quality_score: qualityScore,
+            confidence_score: this.normalizeConfidenceScore(content?.confidence_score) ?? 1.0,
+            score: finalScore,
+            passed_cases: Number.isFinite(Number(content?.passed_cases)) ? Number(content.passed_cases) : counts.passed,
+            failed_cases: Number.isFinite(Number(content?.failed_cases)) ? Number(content.failed_cases) : counts.failed,
+            review_cases: Number.isFinite(Number(content?.review_cases)) ? Number(content.review_cases) : counts.review,
+            total_cases: Number.isFinite(Number(content?.total_cases)) ? Number(content.total_cases) : cases.length,
+            content
+        };
+    }
+
+    static enrichRunRow(row) {
+        const fallbackExecutionStatus = row.execution_status || row.status || '';
+        let metadata = {
+            report_status: '',
+            result_status: '',
+            decision: '',
+            reason_codes: [],
+            raw_score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+            quality_score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+            confidence_score: this.normalizeConfidenceScore(row.confidence_score) ?? 1.0,
+            score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+            passed_cases: 0,
+            failed_cases: 0,
+            review_cases: 0,
+            total_cases: 0
+        };
+
+        try {
+            const reportContent = row.report_content ?? row.content;
+            if (reportContent) {
+                metadata = {
+                    ...metadata,
+                    ...this.extractReportMetadata(reportContent, row)
+                };
+            }
+        } catch (e) {
+            console.error('[Repo] Error parsing report content:', e.message);
+        }
+
+        const { report_content, content, ...rest } = row;
+        const businessStatus = metadata.report_status || metadata.result_status || this.decisionToResultStatus(metadata.decision);
+
+        return {
+            ...rest,
+            execution_status: fallbackExecutionStatus,
+            report_status: metadata.report_status,
+            result_status: businessStatus,
+            decision: metadata.decision,
+            reason_codes: metadata.reason_codes,
+            raw_score: metadata.raw_score,
+            quality_score: metadata.quality_score,
+            confidence_score: metadata.confidence_score,
+            score: metadata.score,
+            passed_cases: metadata.passed_cases,
+            failed_cases: metadata.failed_cases,
+            review_cases: metadata.review_cases,
+            total_cases: metadata.total_cases,
+            status: rest.status || fallbackExecutionStatus
+        };
+    }
+
     // --- Test Cases ---
     static async getAllTestCases() {
         return await db.query('SELECT * FROM test_case ORDER BY created_at DESC');
@@ -17,6 +152,25 @@ class Repository {
     static async getTestCaseById(id) {
         const results = await db.query('SELECT * FROM test_case WHERE id = ?', [id]);
         return results[0] || null;
+    }
+
+    static async getNewTestCasesForDaily(limit = 20) {
+        const parsedLimit = Number.parseInt(limit, 10);
+        const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 500) : 20;
+        const sql = `
+            SELECT tc.*
+            FROM test_case tc
+            WHERE tc.status NOT IN ('QUEUED', 'RUNNING')
+              AND tc.last_run_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM test_run tr
+                  WHERE tr.test_case_id = tc.id
+              )
+            ORDER BY tc.created_at DESC
+            LIMIT ?
+        `;
+        return await db.query(sql, [safeLimit]);
     }
 
     static async createTestCase(data) {
@@ -47,19 +201,43 @@ class Repository {
 
     // --- Test Runs ---
     static async getAllRuns(testCaseId = null) {
-        let sql = 'SELECT * FROM test_run';
+        let sql = `
+            SELECT 
+                trun.*,
+                tr.score,
+                tr.total_steps,
+                tr.passed_steps,
+                tr.failed_steps,
+                tr.content as report_content
+            FROM test_run trun
+            LEFT JOIN test_report tr ON trun.id = tr.test_run_id
+        `;
         const params = [];
         if (testCaseId) {
-            sql += ' WHERE test_case_id = ?';
+            sql += ' WHERE trun.test_case_id = ?';
             params.push(testCaseId);
         }
-        sql += ' ORDER BY created_at DESC';
-        return await db.query(sql, params);
+        sql += ' ORDER BY trun.created_at DESC';
+        const rows = await db.query(sql, params);
+        return rows.map((r) => this.enrichRunRow(r));
     }
 
     static async getRunById(id) {
-        const results = await db.query('SELECT * FROM test_run WHERE id = ?', [id]);
-        return results[0] || null;
+        const sql = `
+            SELECT
+                trun.*,
+                tr.score,
+                tr.total_steps,
+                tr.passed_steps,
+                tr.failed_steps,
+                tr.content as report_content
+            FROM test_run trun
+            LEFT JOIN test_report tr ON trun.id = tr.test_run_id
+            WHERE trun.id = ?
+            LIMIT 1
+        `;
+        const results = await db.query(sql, [id]);
+        return results[0] ? this.enrichRunRow(results[0]) : null;
     }
 
     static async createRun(data) {
@@ -141,7 +319,7 @@ class Repository {
     }
 
     static async getAllReports() {
-        // Trả về metadata của report thay vì content JSON khổng lồ
+        // Trả về metadata của report + parse content để lấy business status
         const sql = `
             SELECT 
                 tr.test_run_id as id,
@@ -149,16 +327,61 @@ class Repository {
                 tr.total_steps,
                 tr.passed_steps,
                 tr.failed_steps,
+                tr.content,
                 trun.name,
                 trun.url,
                 trun.tc_code,
-                trun.status,
+                trun.status as execution_status,
                 trun.created_at as test_time
             FROM test_report tr
             JOIN test_run trun ON tr.test_run_id = trun.id
             ORDER BY trun.created_at DESC
         `;
-        return await db.query(sql);
+        const rows = await db.query(sql);
+        return rows.map((r) => {
+            let metadata = {
+                report_status: '',
+                result_status: '',
+                decision: '',
+                reason_codes: [],
+                raw_score: Number.isFinite(Number(r.score)) ? Number(r.score) : 0,
+                quality_score: Number.isFinite(Number(r.score)) ? Number(r.score) : 0,
+                confidence_score: 1.0,
+                passed_cases: 0,
+                failed_cases: 0,
+                review_cases: 0,
+                total_cases: 0
+            };
+
+            try {
+                if (r.content) {
+                    metadata = {
+                        ...metadata,
+                        ...this.extractReportMetadata(r.content, r)
+                    };
+                }
+            } catch (e) {
+                console.error('[Repo] Error parsing report content for status:', e.message);
+            }
+
+            const { content: _, ...rest } = r;
+            return {
+                ...rest,
+                report_status: metadata.report_status,
+                result_status: metadata.result_status,
+                decision: metadata.decision,
+                reason_codes: metadata.reason_codes,
+                raw_score: metadata.raw_score,
+                quality_score: metadata.quality_score,
+                confidence_score: metadata.confidence_score,
+                passed_cases: metadata.passed_cases,
+                failed_cases: metadata.failed_cases,
+                review_cases: metadata.review_cases,
+                total_cases: metadata.total_cases,
+                cases_summary: metadata.total_cases > 0 ? `${metadata.passed_cases}/${metadata.total_cases} PASS` : '',
+                status: metadata.report_status || r.execution_status
+            };
+        });
     }
 
     static async upsertProduct(data) {
@@ -225,6 +448,45 @@ class Repository {
     /**
      * ✅ Batch insert/update products
      */
+    // --- Reliability v2.1 History (Spec §8) ---
+
+    /**
+     * Query last N runs for a given test_input_signature.
+     * Returns array of { decision, confidence_score, created_at }.
+     * Falls back gracefully if the column doesn't exist yet.
+     */
+    static async getDecisionHistoryBySignature(signature, limit = 5) {
+        try {
+            const sql = `
+                SELECT tr.content
+                FROM test_report tr
+                JOIN test_run trun ON tr.test_run_id = trun.id
+                ORDER BY trun.created_at DESC
+                LIMIT ?
+            `;
+            const rows = await db.query(sql, [limit * 3]); // oversample, then filter
+            const matched = [];
+            for (const row of rows) {
+                try {
+                    const content = typeof row.content === 'string' ? JSON.parse(row.content) : row.content;
+                    if (!content) continue;
+                    // Check each case in the report
+                    for (const c of (content.cases || [content])) {
+                        if (c.test_input_signature === signature && c.decision) {
+                            matched.push({ decision: c.decision, confidence_score: c.confidence_score || 0 });
+                            if (matched.length >= limit) break;
+                        }
+                    }
+                    if (matched.length >= limit) break;
+                } catch (_) {}
+            }
+            return matched;
+        } catch (e) {
+            console.warn('[Repo] getDecisionHistoryBySignature failed:', e.message);
+            return [];
+        }
+    }
+
     static async batchUpsertProducts(products) {
         if (products.length === 0) return;
 

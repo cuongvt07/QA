@@ -1,5 +1,6 @@
 const fs = require('fs');
 const { PNG } = require('pngjs');
+const sharp = require('sharp');
 
 /**
  * Draws multiple bounding boxes on a PNG image based on normalized coordinates (0-1000) and specific colors.
@@ -10,69 +11,83 @@ const { PNG } = require('pngjs');
  * @returns {Promise<boolean>} Resolves to true if successful, false otherwise.
  */
 function drawMultipleBoundingBoxes(inputPath, outputPath, annotations) {
-    return new Promise((resolve) => {
+    return new Promise(async (resolve) => {
         if (!annotations || annotations.length === 0) {
             return resolve(false);
         }
 
-        fs.createReadStream(inputPath)
-            .pipe(new PNG({ filterType: 4 }))
-            .on('parsed', function() {
-                const width = this.width;
-                const height = this.height;
-                const thickness = 4; // Thickness of the box 
+        try {
+            // Guarantee pure PNG header so pngjs doesn't crash on invalid signatures
+            const pngBuffer = await sharp(inputPath).png().toBuffer();
 
-                for (const ann of annotations) {
-                    if (!ann.bbox || ann.bbox.length !== 4) continue;
-                    
-                    const { r, g, b } = ann.color || { r: 255, g: 0, b: 0 };
-                    const [nx1, ny1, nx2, ny2] = ann.bbox;
-
-                    // Denormalize points
-                    const x1 = Math.round((nx1 / 1000) * width);
-                    const y1 = Math.round((ny1 / 1000) * height);
-                    const x2 = Math.round((nx2 / 1000) * width);
-                    const y2 = Math.round((ny2 / 1000) * height);
-
-                    // Draw horizontal lines
-                    for (let x = Math.max(0, x1); x <= Math.min(width - 1, x2); x++) {
-                        for (let t = 0; t < thickness; t++) {
-                            // Top line
-                            if (y1 + t >= 0 && y1 + t < height) setPixel(this, x, y1 + t, r, g, b, 255);
-                            // Bottom line
-                            if (y2 - t >= 0 && y2 - t < height) setPixel(this, x, y2 - t, r, g, b, 255);
-                        }
-                    }
-
-                    // Draw vertical lines
-                    for (let y = Math.max(0, y1); y <= Math.min(height - 1, y2); y++) {
-                        for (let t = 0; t < thickness; t++) {
-                            // Left line
-                            if (x1 + t >= 0 && x1 + t < width) setPixel(this, x1 + t, y, r, g, b, 255);
-                            // Right line
-                            if (x2 - t >= 0 && x2 - t < width) setPixel(this, x2 - t, y, r, g, b, 255);
-                        }
-                    }
-
-                    // Add a slightly translucent background inside
-                    for (let y = Math.max(0, y1 + thickness); y <= Math.min(height - 1, y2 - thickness); y++) {
-                        for (let x = Math.max(0, x1 + thickness); x <= Math.min(width - 1, x2 - thickness); x++) {
-                            blendPixel(this, x, y, r, g, b, 40); // 40 alpha over 255
-                        }
-                    }
+            new PNG({ filterType: 4 }).parse(pngBuffer, (err, parsedPng) => {
+                if (err || !parsedPng || !parsedPng.data) {
+                    console.warn('    ⚠️ Error parsing image for annotation:', err?.message || 'Invalid PNG data');
+                    return resolve(false);
                 }
 
-                this.pack().pipe(fs.createWriteStream(outputPath))
-                    .on('finish', () => resolve(true))
-                    .on('error', (err) => {
-                        console.warn('    ⚠️ Error saving annotated image:', err);
+                try {
+                    const png = parsedPng;
+                    const width = png.width;
+                    const height = png.height;
+                    const thickness = 4; // Thickness of the box 
+
+                    for (const ann of annotations) {
+                        if (!ann.bbox || ann.bbox.length !== 4) continue;
+                        
+                        const { r, g, b } = ann.color || { r: 255, g: 0, b: 0 };
+                        const [nx1, ny1, nx2, ny2] = ann.bbox;
+
+                        // Denormalize points
+                        const x1 = Math.round((nx1 / 1000) * width);
+                        const y1 = Math.round((ny1 / 1000) * height);
+                        const x2 = Math.round((nx2 / 1000) * width);
+                        const y2 = Math.round((ny2 / 1000) * height);
+
+                        // Draw horizontal lines
+                        for (let x = Math.max(0, x1); x <= Math.min(width - 1, x2); x++) {
+                            for (let t = 0; t < thickness; t++) {
+                                // Top line
+                                if (y1 + t >= 0 && y1 + t < height) setPixel(png, x, y1 + t, r, g, b, 255);
+                                // Bottom line
+                                if (y2 - t >= 0 && y2 - t < height) setPixel(png, x, y2 - t, r, g, b, 255);
+                            }
+                        }
+
+                        // Draw vertical lines
+                        for (let y = Math.max(0, y1); y <= Math.min(height - 1, y2); y++) {
+                            for (let t = 0; t < thickness; t++) {
+                                // Left line
+                                if (x1 + t >= 0 && x1 + t < width) setPixel(png, x1 + t, y, r, g, b, 255);
+                                // Right line
+                                if (x2 - t >= 0 && x2 - t < width) setPixel(png, x2 - t, y, r, g, b, 255);
+                            }
+                        }
+
+                        // Add a slightly translucent background inside
+                        for (let y = Math.max(0, y1 + thickness); y <= Math.min(height - 1, y2 - thickness); y++) {
+                            for (let x = Math.max(0, x1 + thickness); x <= Math.min(width - 1, x2 - thickness); x++) {
+                                blendPixel(png, x, y, r, g, b, 40); // 40 alpha over 255
+                            }
+                        }
+                    }
+
+                    const out = fs.createWriteStream(outputPath);
+                    out.on('finish', () => resolve(true));
+                    out.on('error', (e) => {
+                        console.warn('    ⚠️ Error saving annotated image:', e.message);
                         resolve(false);
                     });
-            })
-            .on('error', (err) => {
-                console.warn('    ⚠️ Error reading original image for annotation:', err);
-                resolve(false);
+                    png.pack().pipe(out);
+                } catch (drawErr) {
+                    console.warn('    ⚠️ Error drawing annotation:', drawErr.message);
+                    resolve(false);
+                }
             });
+        } catch (err) {
+            console.warn('    ⚠️ Error preparing original image for annotation:', err.message);
+            resolve(false);
+        }
     });
 }
 

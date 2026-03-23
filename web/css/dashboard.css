@@ -395,6 +395,11 @@ button {
     color: var(--accent-warning);
 }
 
+.stat-icon.bg-purple {
+    background: rgba(167, 139, 250, 0.15);
+    color: #a78bfa;
+}
+
 .stat-info {
     display: flex;
     flex-direction: column;
@@ -583,12 +588,26 @@ button {
     border: 1px dashed var(--border-subtle);
 }
 
+.badge-review {
+    background: rgba(167, 139, 250, 0.2); /* Purple/Violet for Review */
+    color: #a78bfa;
+    border: 1px solid rgba(167, 139, 250, 0.3);
+}
+
+.badge-decision {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 500;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-subtle);
+}
+
 /* ============================================================
    TEST CASES GRID
    ============================================================ */
 .test-cases-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
     gap: 16px;
 }
 
@@ -636,10 +655,126 @@ button {
     gap: 8px;
 }
 
+/* --- Test Case Table Layout --- */
+.tc-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin-top: 10px;
+    background: var(--bg-surface);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    animation: fadeInUp 0.4s var(--ease);
+}
+
+.tc-table th {
+    text-align: left;
+    padding: 14px 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.tc-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    vertical-align: middle;
+    transition: background 0.2s var(--ease);
+}
+
+.tc-table tr:last-child td {
+    border-bottom: none;
+}
+
+.tc-table tr:hover td {
+    background: var(--bg-hover);
+}
+
+.td-url {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--accent-primary);
+    font-size: 0.85rem;
+    font-family: 'Fira Code', monospace;
+}
+
+.td-url a {
+    color: inherit;
+    opacity: 0.8;
+}
+
+.td-url a:hover {
+    opacity: 1;
+    text-decoration: underline;
+}
+
+.status-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+}
+
+.table-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.btn-xs {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    border-radius: 4px;
+}
+
+.badge-ready {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-muted);
+}
+
+.badge-finished {
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--text-secondary);
+}
+
 .btn-sm {
     padding: 6px 12px;
     font-size: 0.8rem;
     border-radius: 6px;
+}
+
+/* --- Phase 0.3 Explainability Elements --- */
+.reason-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.reason-tag {
+    font-size: 0.65rem;
+    padding: 1px 6px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-muted);
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.score-container {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+}
+
+.score-raw {
+    font-size: 0.7rem;
+    opacity: 0.5;
+    text-decoration: line-through;
 }
 
 /* ============================================================
@@ -730,9 +865,9 @@ button {
 }
 
 .modal {
-    width: 90%;
+    width: 100%;
     max-width: 560px;
-    max-height: 85vh;
+    max-height: 95vh;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -740,14 +875,14 @@ button {
 }
 
 .modal-large {
-    max-width: 900px;
+    max-width: 1240px;
 }
 
 .modal-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 20px 24px;
+    padding: 20px;
     border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -776,7 +911,7 @@ button {
 }
 
 .modal-body {
-    padding: 24px;
+    padding: 20px;
     overflow-y: auto;
     flex: 1;
 }
@@ -1254,7 +1389,7 @@ button {
 
 .step-item {
     position: relative;
-    padding-bottom: 30px;
+    padding-bottom: 20px;
 }
 
 .step-marker {
@@ -1288,8 +1423,8 @@ button {
 }
 
 .step-content {
-    margin-left: 45px;
-    padding: 20px;
+    margin-left: 25px;
+    padding: 15px;
     background: var(--bg-surface);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
@@ -1331,9 +1466,9 @@ button {
     font-size: 0.95rem;
     font-weight: 700;
     color: var(--text-primary);
-    display:flex;
-    align-items:center;
-    gap:8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .toggle-icon {
@@ -1357,7 +1492,8 @@ button {
 .collapsible-content.collapsed {
     max-height: 0;
     opacity: 0;
-    margin-bottom: 24px; /* Keep margin for flow if needed, or set to 0 */
+    margin-bottom: 24px;
+    /* Keep margin for flow if needed, or set to 0 */
     pointer-events: none;
 }
 

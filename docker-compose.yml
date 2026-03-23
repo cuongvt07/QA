@@ -1,0 +1,48 @@
+services:
+    db:
+        image: mysql:8.0
+        container_name: pod-tester-db
+        restart: unless-stopped
+        environment:
+            MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_password}
+            MYSQL_DATABASE: ${DB_NAME:-customily-pod-tester}
+            MYSQL_USER: ${DB_USER:-pod_user}
+            MYSQL_PASSWORD: ${DB_PASSWORD:-pod_password}
+        ports:
+            - '3307:3306'
+        volumes:
+            - db_data:/var/lib/mysql
+            - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+        healthcheck:
+            test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 30s
+
+    app:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        container_name: pod-tester-app
+        restart: unless-stopped
+        depends_on:
+            db:
+                condition: service_healthy
+        ports:
+            - '${PORT:-8090}:8090'
+        env_file:
+            - .env
+        environment:
+            DB_HOST: db
+            DB_PORT: 3306
+            DB_USER: ${DB_USER:-pod_user}
+            DB_PASSWORD: ${DB_PASSWORD:-pod_password}
+            DB_NAME: ${DB_NAME:-customily-pod-tester}
+        volumes:
+            - reports_data:/app/web/reports
+            - ./.env:/app/.env
+
+volumes:
+    db_data:
+    reports_data:

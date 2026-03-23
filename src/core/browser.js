@@ -79,6 +79,119 @@ async function launchBrowser(options = {}) {
 }
 
 /**
+ * Continuously hides ads and checks for blocking overlays.
+ * Only returns when no blocker is found for 2 consecutive polls, or if timeout is reached.
+ */
+async function waitNoBlockingOverlay(page, { timeoutMs = 5000, pollMs = 500 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let stableCount = 0;
+
+    while (Date.now() < deadline) {
+        await hideAdPopups(page);
+
+        const hasBlocker = await page.evaluate(() => {
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            const centerX = viewportWidth / 2;
+            const centerY = viewportHeight / 2;
+
+            const isInterceptingCenter = (rect) => {
+                return (
+                    rect.left < centerX + 50 &&
+                    rect.right > centerX - 50 &&
+                    rect.top < centerY + 50 &&
+                    rect.bottom > centerY - 50
+                );
+            };
+
+            const blockers = Array.from(document.querySelectorAll('[role="dialog"], .modal, .popup, .overlay, [class*="popup"], [class*="modal"]'));
+            for (const el of blockers) {
+                if (el.closest('#formCustomization, .customily-app, .customily-form-content')) continue;
+                const style = window.getComputedStyle(el);
+                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && style.pointerEvents !== 'none') {
+                    const rect = el.getBoundingClientRect();
+                    // Catch large overlays or those intercepting the center
+                    if ((rect.width > 100 && rect.height > 100 && parseInt(style.zIndex || '0', 10) > 100) || isInterceptingCenter(rect)) {
+                        return true;
+                    }
+                }
+            }
+            const allElements = document.querySelectorAll('div, section, aside');
+            for (const el of allElements) {
+                 const style = window.getComputedStyle(el);
+                 if (style.position === 'fixed' && style.display !== 'none' && style.pointerEvents !== 'none') {
+                     const zIndex = parseInt(style.zIndex || '0', 10);
+                     const rect = el.getBoundingClientRect();
+                     if ((zIndex > 9000 && rect.width > 200 && rect.height > 200) || (zIndex > 500 && isInterceptingCenter(rect))) {
+                         if (!el.closest('#formCustomization, .customily-app')) return true;
+                     }
+                 }
+            }
+            return false;
+        });
+
+        if (hasBlocker) {
+            stableCount = 0;
+            await page.waitForTimeout(pollMs);
+        } else {
+            stableCount++;
+            if (stableCount >= 2) return true; // Stable
+            await page.waitForTimeout(pollMs);
+        }
+    }
+    return false; // Timed out with blockers still present
+}
+
+/**
+ * Wait for Customizer to be loaded in the DOM, plus hide popups.
+ */
+async function waitForCustomizerReady(page, { maxMs = 15000, minMs = 2000, graceMs = 1500 } = {}) {
+    console.log(`    ⏳ Waiting for Customizer Ready (min: ${minMs}ms, max: ${maxMs}ms)...`);
+    const deadline = Date.now() + maxMs;
+    let isReady = false;
+
+    // Wait at least minMs to allow basic JS parsing
+    await page.waitForTimeout(minMs);
+
+    while (Date.now() < deadline) {
+        await hideAdPopups(page); // keep clearing ads
+
+        const readyStatus = await page.evaluate(() => {
+            const hasApp = !!document.querySelector('canvas, .customily-gr, #customily-app, #formCustomization');
+            const hasLoading = !!document.querySelector('#loadingElement, .customily-loading, .loading-spinner, .loading-overlay');
+            if (!hasApp) return false;
+
+            if (hasLoading) {
+                const loadingEls = document.querySelectorAll('#loadingElement, .customily-loading, .loading-spinner, .loading-overlay');
+                let isLoadingVisible = false;
+                for (const el of loadingEls) {
+                    const style = window.getComputedStyle(el);
+                    if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                        isLoadingVisible = true; break;
+                    }
+                }
+                return !isLoadingVisible;
+            }
+            return true; 
+        });
+
+        if (readyStatus) {
+            isReady = true;
+            break;
+        }
+
+        await page.waitForTimeout(500);
+    }
+
+    if (!isReady) {
+        console.warn(`    ⚠️ Customizer element not fully ready after ${maxMs}ms. Proceeding anyway.`);
+    } else {
+        console.log(`    ✅ Customizer loaded. Running popup grace window (${graceMs}ms)...`);
+        await waitNoBlockingOverlay(page, { timeoutMs: graceMs, pollMs: 500 });
+    }
+}
+
+/**
  * Navigate to a product URL and wait for page load.
  * Now uses DYNAMIC waiting for the customizer instead of fixed timeouts.
  */
@@ -96,13 +209,11 @@ async function navigateToProduct(page, url, skipLongWait = false) {
         });
     }
 
-    // Use 15s wait for first case, shorter 3s for subsequent cases
     if (!skipLongWait) {
-        console.log('    ⏳ Waiting 15s for page and popups to settle...');
-        await page.waitForTimeout(15000);
+        await waitForCustomizerReady(page, { maxMs: 15000, minMs: 1500, graceMs: 1200 });
     } else {
-        console.log('    ⏳ Quick wait 3s (subsequent case)...');
-        await page.waitForTimeout(3000);
+        // Reduced from 1500 to 1000 for efficiency, while still giving Customily time to hydrate
+        await waitForCustomizerReady(page, { maxMs: 8000, minMs: 1000, graceMs: 900 });
     }
     
     // Final cleanup before returning to start the test steps
@@ -197,4 +308,6 @@ module.exports = {
     navigateToProduct,
     closeBrowser,
     ensureCleanPage,
+    waitNoBlockingOverlay,
+    waitForCustomizerReady
 };

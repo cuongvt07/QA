@@ -14,7 +14,7 @@
         testRuns: loadFromStorage('qa_test_runs') || [],
         currentPage: 'dashboard',
         searchQuery: '',
-        
+
         // Filters
         filters: {
             status: 'ALL',
@@ -23,6 +23,7 @@
 
         products: [], // Crawled products
         selectedProducts: new Set(), // product_id|platform
+        selectedTestCases: new Set(), // testCaseId
 
         // Pagination
         pagination: {
@@ -31,7 +32,7 @@
             products: { page: 1, pageSize: 15 }
         },
 
-        // ✅ Track các test đang chạy
+        // âœ… Track cÃ¡c test Ä‘ang cháº¡y
         runningTests: new Map(), // testCaseId -> { runId, startTime }
         activeElements: new Map(), // testCaseId -> { buttonEl, progressEl, originalText }
     };
@@ -45,8 +46,9 @@
             document.querySelectorAll('[data-timer-start]').forEach(el => {
                 const startTs = parseInt(el.dataset.timerStart, 10);
                 if (startTs) {
-                    const diff = Math.floor((now - startTs) / 1000);
-                    el.textContent = diff + 's';
+                    const normalizedStartTs = startTs < 1e12 ? startTs * 1000 : startTs;
+                    const diff = Math.max(0, Math.floor((now - normalizedStartTs) / 1000));
+                    el.textContent = formatElapsedSeconds(diff);
                 }
             });
         }, 1000);
@@ -87,26 +89,37 @@
 
     function handleSSETestQueued(data) {
         const { runId, testCaseId, testName } = data;
-        
+        const runIdStr = String(runId || '');
+        const testCaseKey = String(testCaseId || '');
+
         if (testCaseId) {
-            const tc = state.testCases.find(t => t.id === testCaseId);
-            if (tc) tc.status = 'QUEUED';
+            const tc = state.testCases.find(t => String(t.id) === testCaseKey);
+            if (tc) {
+                tc.execution_status = 'QUEUED';
+                tc.result_status = '';
+                tc.status = 'QUEUED';
+            }
         }
 
-        const existingRun = state.testRuns.find(r => r.id === runId);
+        const existingRun = state.testRuns.find(r => String(r.id) === runIdStr);
         if (existingRun) {
+            existingRun.execution_status = 'QUEUED';
+            existingRun.result_status = '';
             existingRun.status = 'QUEUED';
+            if (!existingRun._startTimestamp) existingRun._startTimestamp = Date.now();
         } else {
-            state.testRuns.push({
+            upsertRun({
                 id: runId,
                 test_case_id: testCaseId,
                 name: testName,
                 status: 'QUEUED',
+                execution_status: 'QUEUED',
+                result_status: '',
                 started_at: null,
                 _startTimestamp: Date.now()
             });
         }
-        
+
         saveToStorage('qa_test_runs', state.testRuns);
         saveToStorage('qa_test_cases', state.testCases);
 
@@ -116,66 +129,109 @@
 
     function handleSSETestStarted(data) {
         const { runId, testCaseId, testName } = data;
-        
-        // Cập nhật state nếu cần
+        const runIdStr = String(runId || '');
+        const testCaseKey = String(testCaseId || '');
+
+        // Cáº­p nháº­t state náº¿u cáº§n
         if (testCaseId) {
-            const tc = state.testCases.find(t => t.id === testCaseId);
-            if (tc) tc.status = 'RUNNING';
+            const tc = state.testCases.find(t => String(t.id) === testCaseKey);
+            if (tc) {
+                tc.execution_status = 'RUNNING';
+                tc.result_status = '';
+                tc.status = 'RUNNING';
+            }
         }
 
-        // Cập nhật hoặc tạo run
-        const existingRun = state.testRuns.find(r => r.id === runId);
+        // Cáº­p nháº­t hoáº·c táº¡o run
+        const existingRun = state.testRuns.find(r => String(r.id) === runIdStr);
         if (existingRun) {
             existingRun.status = 'RUNNING';
-            existingRun.started_at = new Date().toISOString();
-            existingRun._startTimestamp = Date.now();
+            existingRun.execution_status = 'RUNNING';
+            existingRun.result_status = '';
+            if (!existingRun.started_at) existingRun.started_at = new Date().toISOString();
+            if (!existingRun._startTimestamp) existingRun._startTimestamp = Date.now();
         } else {
-            state.testRuns.push({
+            upsertRun({
                 id: runId,
                 test_case_id: testCaseId,
                 name: testName,
                 status: 'RUNNING',
+                execution_status: 'RUNNING',
+                result_status: '',
                 started_at: new Date().toISOString(),
                 _startTimestamp: Date.now()
             });
         }
 
-        state.runningTests.set(testCaseId || runId, { runId, startTime: Date.now() });
-        
+        state.runningTests.set(testCaseKey || runIdStr, { runId: runIdStr || runId, startTime: Date.now() });
+
         saveToStorage('qa_test_runs', state.testRuns);
         saveToStorage('qa_test_cases', state.testCases);
 
-        // Render lại UI
+        // Render láº¡i UI
         if (state.currentPage === 'dashboard') renderDashboard();
         if (state.currentPage === 'test-cases') renderTestCases();
     }
 
     async function handleSSETestFinished(data) {
         const { runId, testCaseId, status } = data;
-        
-        state.runningTests.delete(testCaseId || runId);
+        const runIdStr = String(runId || '');
+        const testCaseKey = String(testCaseId || '');
+        const stateKey = testCaseKey || runIdStr;
+        const terminalStatus = normalizeRunStatus(status);
+        const isBusinessStatus = ['PASS', 'FAIL', 'FATAL', 'REVIEW'].includes(terminalStatus);
 
-        // Dọn dẹp UI nếu có lưu trong Map
-        const elements = state.activeElements.get(testCaseId || runId);
+        state.runningTests.delete(stateKey);
+        if (runIdStr) state.runningTests.delete(runIdStr);
+
+        // Dá»n dáº¹p UI náº¿u cÃ³ lÆ°u trong Map
+        const elements = state.activeElements.get(stateKey) || state.activeElements.get(runIdStr);
         if (elements) {
             if (elements.progressEl) elements.progressEl.remove();
             if (elements.buttonEl) {
                 elements.buttonEl.innerHTML = elements.originalText;
                 elements.buttonEl.disabled = false;
             }
-            state.activeElements.delete(testCaseId || runId);
+            state.activeElements.delete(stateKey);
+            if (runIdStr) state.activeElements.delete(runIdStr);
         }
 
-        // Cập nhật trạng thái test case
+        const existingRun = state.testRuns.find((r) => String(r.id) === runIdStr);
+        if (existingRun) {
+            existingRun.status = terminalStatus || 'FINISHED';
+            existingRun.execution_status = ['FAILED', 'RUNNING', 'QUEUED'].includes(terminalStatus)
+                ? terminalStatus
+                : 'FINISHED';
+            if (isBusinessStatus) {
+                existingRun.result_status = terminalStatus;
+                existingRun.report_status = terminalStatus;
+            } else if (terminalStatus === 'COMPLETED' && !existingRun.result_status) {
+                existingRun.result_status = 'PASS';
+            } else if (terminalStatus === 'FAILED' && !existingRun.result_status) {
+                existingRun.result_status = 'FAIL';
+            }
+            existingRun.finished_at = new Date().toISOString();
+            delete existingRun._startTimestamp;
+        }
+
+        // Cáº­p nháº­t tráº¡ng thÃ¡i test case
         if (testCaseId) {
-            const tc = state.testCases.find(t => t.id === testCaseId);
-            if (tc) tc.status = status === 'COMPLETED' ? 'PASS' : 'FAIL';
+            const tc = state.testCases.find(t => String(t.id) === testCaseKey);
+            if (tc) {
+                tc.execution_status = 'FINISHED';
+                tc.result_status = isBusinessStatus ? terminalStatus : (terminalStatus === 'COMPLETED' ? 'PASS' : 'FAIL');
+                tc.status = tc.result_status;
+                delete tc._startTimestamp;
+            }
         }
 
-        // Fetch detail của run này để lấy đầy đủ info
+        saveToStorage('qa_test_runs', state.testRuns);
+        saveToStorage('qa_test_cases', state.testCases);
+
+        // Fetch detail cá»§a run nÃ y Ä‘á»ƒ láº¥y Ä‘áº§y Ä‘á»§ info
         await fetchRunDetailById(runId);
 
-        // Render lại UI
+        // Render láº¡i UI
         if (state.currentPage === 'dashboard') renderDashboard();
         if (state.currentPage === 'test-cases') renderTestCases();
         if (state.currentPage === 'history') renderHistory();
@@ -194,14 +250,14 @@
     function initFilters() {
         const statusFilter = $('#filter-status');
         const dateFilter = $('#filter-date');
-        
+
         if (statusFilter) {
             statusFilter.addEventListener('change', (e) => {
                 state.filters.status = e.target.value;
                 refreshCurrentPage();
             });
         }
-        
+
         if (dateFilter) {
             dateFilter.addEventListener('change', (e) => {
                 state.filters.date = e.target.value;
@@ -299,16 +355,16 @@
         };
         pageTitle.textContent = titles[pageName] || 'Dashboard';
 
-        // ✅ CHỈ sync khi chuyển đến trang cần dữ liệu MỚI
-        // KHÔNG sync khi người dùng đang ở trang đó và test đang chạy
+        // âœ… CHá»ˆ sync khi chuyá»ƒn Ä‘áº¿n trang cáº§n dá»¯ liá»‡u Má»šI
+        // KHÃ”NG sync khi ngÆ°á»i dÃ¹ng Ä‘ang á»Ÿ trang Ä‘Ã³ vÃ  test Ä‘ang cháº¡y
         const needsSync = (pageName === 'dashboard' || pageName === 'test-cases' || pageName === 'history');
         const hasRunningTests = state.runningTests.size > 0;
 
         if (needsSync && !hasRunningTests) {
-            // Chỉ sync nếu KHÔNG có test nào đang chạy
+            // Chá»‰ sync náº¿u KHÃ”NG cÃ³ test nÃ o Ä‘ang cháº¡y
             syncAllFromApi({ render: true });
         } else if (needsSync) {
-            // Nếu có test đang chạy, chỉ render lại với data hiện có
+            // Náº¿u cÃ³ test Ä‘ang cháº¡y, chá»‰ render láº¡i vá»›i data hiá»‡n cÃ³
             if (pageName === 'dashboard') renderDashboard();
             else if (pageName === 'test-cases') renderTestCases();
             else if (pageName === 'history') renderHistory();
@@ -342,10 +398,10 @@
         const url = $('#input-product-url').value.trim();
 
         if (!url) {
-            await showPopup({ 
-                title: 'Invalid Input', 
+            await showPopup({
+                title: 'Invalid Input',
                 message: 'Please enter a Product URL.',
-                okText: 'Understood' 
+                okText: 'Understood'
             });
             return;
         }
@@ -366,8 +422,8 @@
             closeNewTestModal();
             switchPage('test-cases');
         } catch (error) {
-            await showPopup({ 
-                title: 'Creation Failed', 
+            await showPopup({
+                title: 'Creation Failed',
                 message: 'Create test case failed: ' + error.message,
                 okText: 'Dismiss'
             });
@@ -385,10 +441,8 @@
             { path: '/api/reports-all', method: 'POST' },   // fallback when DELETE is blocked
         ];
 
-        // If the dashboard is opened as a raw file:// page, relative API URLs won't work.
-        const baseCandidates = window.location.protocol === 'file:'
-            ? ['http://localhost:8090', '']
-            : [''];
+        // Always try relative first, then fall back to absolute loopback if hosted on different port
+        const baseCandidates = ['', 'http://localhost:8090', 'http://127.0.0.1:8090'];
 
         const errors = [];
 
@@ -403,10 +457,19 @@
 
                     let errorMsg = `HTTP ${res.status}: ${res.statusText}`;
                     try {
-                        const payload = await res.json();
-                        if (payload && payload.error) errorMsg = payload.error;
+                        const text = await res.text();
+                        try {
+                            const payload = JSON.parse(text);
+                            if (payload && payload.error) errorMsg = payload.error;
+                        } catch (err) {
+                            if (text && text.includes('<html')) {
+                                errorMsg += ` (Returned HTML unexpectedly. Are you on the right port?)`;
+                            } else {
+                                errorMsg += ` (${text.slice(0, 50)})`;
+                            }
+                        }
                     } catch (_) {
-                        // Ignore non-JSON response bodies.
+                        // Ignore body reading errors
                     }
                     errors.push(`${candidate.method} ${url} -> ${errorMsg}`);
                 } catch (error) {
@@ -491,9 +554,9 @@
                     const report = JSON.parse(ev.target.result);
                     importReport(report);
                 } catch (err) {
-                    showPopup({ 
-                        title: 'Import Error', 
-                        message: 'Invalid JSON file: ' + err.message 
+                    showPopup({
+                        title: 'Import Error',
+                        message: 'Invalid JSON file: ' + err.message
                     });
                 }
             };
@@ -532,9 +595,9 @@
         state.testRuns.push(run);
         saveToStorage('qa_test_runs', state.testRuns);
         renderDashboard();
-        showPopup({ 
-            title: 'Import Success', 
-            message: `<b>Imported:</b> ${escapeHtml(run.name)} (${run.total_steps} steps)` 
+        showPopup({
+            title: 'Import Success',
+            message: `<b>Imported:</b> ${escapeHtml(run.name)} (${run.total_steps} steps)`
         });
     }
 
@@ -592,58 +655,108 @@
     // ============================================================
     // RENDERING: Dashboard
     // ============================================================
+    function bindRecentRunCardEvents(listEl) {
+        listEl.querySelectorAll('.run-card').forEach((card) => {
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('.btn-delete-run') || e.target.closest('.btn-run-from-history')) return;
+                const runId = card.dataset.runId;
+                const run = state.testRuns.find((r) => r.id === runId);
+                if (run) openDetailModal(run);
+            });
+        });
+
+        listEl.querySelectorAll('.btn-run-from-history').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const tcId = btn.dataset.tcId;
+                let tc = state.testCases.find(t => String(t.id) === String(tcId));
+
+                if (!tc && btn.closest('.run-card')) {
+                    const runId = btn.closest('.run-card').dataset.runId;
+                    const run = state.testRuns.find(r => r.id === runId);
+                    if (run) {
+                        if (run.tc_code) tc = state.testCases.find(t => t.tc_code === run.tc_code);
+                        if (!tc && run.name && (run.url || run.product_url)) tc = state.testCases.find(t => t.name === run.name && t.url === (run.url || run.product_url));
+                    }
+                }
+
+                if (tc) {
+                    const isHeadless = $('#checkbox-headless') ? $('#checkbox-headless').checked : true;
+                    const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
+                    // Note: triggerTestRun should be available globally
+                    triggerTestRun(tc, btn, isHeadless, useAi, {
+                        tcCodeOverride: btn.dataset.reportCode || tc.tc_code || tc.name,
+                        concurrency: 2,
+                    });
+                } else {
+                    showPopup({ title: 'Not Found', message: 'Original test case not found.', okText: 'OK' });
+                }
+            });
+        });
+
+        listEl.querySelectorAll('.btn-delete-run').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const runId = btn.dataset.runId;
+                if (typeof deleteTestRun === 'function') {
+                    deleteTestRun(runId);
+                } else {
+                    console.warn('deleteTestRun function not found.');
+                }
+            });
+        });
+    }
+
+    function renderRunCard(run) {
+        const statusMeta = getUiStatusMeta(run.status || 'FAIL');
+        const tcLabel = escapeHtml(run.name || run.tc_code || 'Unknown Test');
+        const urlLabel = escapeHtml(run.product_url || run.url || '');
+        const timeStr = formatTime(getRunTimeIso(run));
+        const scoreValue = Number(run.score);
+
+        return `
+        <div class="run-card glass-panel" data-run-id="${run.id}" style="margin-bottom:8px; cursor:pointer; padding:12px 16px; display:flex; justify-content:space-between; align-items:center; gap:16px; transition: all 0.2s ease;">
+            <!-- Khá»‘i trÃ¡i (Left block) - ThÃ´ng tin -->
+            <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:4px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <h3 style="margin:0; font-size:1rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${tcLabel}">${tcLabel}</h3>
+                    <span class="badge badge-${statusMeta.className}" style="flex-shrink:0;">${statusMeta.label}</span>
+                </div>
+                ${urlLabel ? `<div style="font-size:0.8rem; color:var(--accent-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${urlLabel}">${urlLabel}</div>` : ''}
+            </div>
+
+            <!-- Khá»‘i pháº£i (Right block) - ThÃ´ng sá»‘ & HÃ nh Ä‘á»™ng -->
+            <div style="display:flex; align-items:center; gap:16px; flex-shrink:0;">
+                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px; font-size:0.8rem; color:var(--text-secondary);">
+                    <div><strong style="color:var(--text-primary)">${Number.isFinite(scoreValue) ? scoreValue : '-'}</strong> pts &bull; <strong>${run.total_steps || 0}</strong> stp</div>
+                    <div style="font-family:'Fira Code', monospace; font-size:0.75rem; color:var(--text-muted);">${timeStr}</div>
+                </div>
+                <div class="card-actions" style="display:flex; align-items:center; gap:6px; border-left:1px solid rgba(255,255,255,0.1); padding-left:16px;">
+                    ${(run.test_case_id && normalizeRunStatus(run.status) !== 'RUNNING') ? `
+                            <button class="btn-primary btn-xs btn-run-from-history" data-tc-id="${run.test_case_id}" data-report-code="${escapeHtml(run.report_code || run.tc_code || '')}" title="Run again">Run</button>
+                    ` : ''}
+                    <button class="btn-ghost btn-xs btn-delete-run" data-run-id="${run.id}" title="Delete" style="color:var(--accent-danger);">Del</button>
+                </div>
+            </div>
+        </div>
+        `;
+    }
+
     function renderDashboard() {
-        // Apply filters to runs
-        const runs = getFilteredRuns(state.testRuns);
-        
-        // Update match count
-        const countEl = $('#filter-match-count');
-        if (countEl) countEl.textContent = runs.length;
-
-        // Stats should still reflect ALL runs, not just filtered ones
-        const allRuns = state.testRuns;
-        const total = allRuns.length;
-        const passed = allRuns.filter((r) => normalizeRunStatus(r.status) === 'PASS').length;
-        const failed = allRuns.filter((r) => ['FAIL', 'FATAL', 'FAILED'].includes(normalizeRunStatus(r.status))).length;
-        const scores = allRuns
-            .map((r) => Number(r.score))
-            .filter((s) => Number.isFinite(s));
-        const avgScore = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
-
-        $('#stat-total .stat-value').textContent = total;
-        $('#stat-passed .stat-value').textContent = passed;
-        $('#stat-failed .stat-value').textContent = failed;
-        $('#stat-avgScore .stat-value').textContent = avgScore !== null ? `${avgScore}%` : '-';
+        if (state.currentPage !== 'dashboard') return;
 
         const listEl = $('#recent-runs-list');
-        if (runs.length === 0) {
-            const query = state.searchQuery;
-            const emptyText = query
-                ? `No test runs match "${escapeHtml(query)}".`
-                : `No test runs yet. Click <strong>"New Test"</strong> to start.`;
+        if (!listEl) return;
 
-            listEl.innerHTML = `
-                <div class="empty-state glass-panel">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                    <p>${emptyText}</p>
-                </div>`;
+        // Filter and sort runs
+        const sortedLatestRuns = [...state.testRuns].sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a));
+        const totalItems = sortedLatestRuns.length;
+
+        if (totalItems === 0) {
+            listEl.innerHTML = '<div class="empty-state">No recent test runs. Start a new test to see it here.</div>';
             return;
         }
 
-        // Group runs by Test Case ID or Name to show only the latest run per test case
-        const latestRunsMap = new Map();
-        [...runs]
-            .sort((a, b) => getRunTimeValue(a) - getRunTimeValue(b)) // oldest to newest so newest overwrites
-            .forEach(run => {
-                const key = run.test_case_id || run.name || 'Unknown';
-                latestRunsMap.set(key, run);
-            });
-
-        const sortedLatestRuns = Array.from(latestRunsMap.values())
-            .sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a));
-
-        // Pagination for Dashboard
-        const totalItems = sortedLatestRuns.length;
         const { page, pageSize } = state.pagination.dashboard;
         const totalPages = Math.ceil(totalItems / pageSize);
         const paginatedRuns = sortedLatestRuns.slice((page - 1) * pageSize, page * pageSize);
@@ -651,82 +764,7 @@
         listEl.innerHTML = paginatedRuns.map((run) => renderRunCard(run)).join('');
         renderPagination('pagination-dashboard', 'dashboard', totalItems);
 
-        // Attach click handlers
-        listEl.querySelectorAll('.run-card').forEach((card) => {
-            card.addEventListener('click', (e) => {
-                // Don't open detail if delete button was clicked
-                if (e.target.closest('.btn-delete-run')) return;
-                const runId = card.dataset.runId;
-                const run = state.testRuns.find((r) => r.id === runId);
-                if (run) openDetailModal(run);
-            });
-        });
-
-        // Attach delete handlers
-        listEl.querySelectorAll('.btn-delete-run').forEach((btn) => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const runId = btn.dataset.runId;
-                deleteTestRun(runId);
-            });
-        });
-    }
-
-    function renderRunCard(run) {
-        const statusMeta = getUiStatusMeta(run.status);
-        const statusClass = statusMeta.className;
-        const badgeClass = `badge-${statusClass}`;
-        const time = formatTime(getRunTimeIso(run));
-        const scoreValue = Number(run.score);
-        const score = Number.isFinite(scoreValue) ? `${scoreValue}/100` : '-';
-
-        // Per-case score badges
-        let caseBadgesHtml = '';
-        if (run.cases && run.cases.length > 0) {
-            caseBadgesHtml = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">';
-            run.cases.forEach((c, i) => {
-                const cStatus = c.status === 'PASS' ? 'pass' : c.status === 'FATAL' ? 'fatal' : 'fail';
-                const bgColor = cStatus === 'pass' ? 'rgba(16,185,129,0.15)' : cStatus === 'fatal' ? 'rgba(185,28,28,0.15)' : 'rgba(239,68,68,0.15)';
-                const textColor = cStatus === 'pass' ? 'var(--accent-success)' : cStatus === 'fatal' ? '#f87171' : 'var(--accent-danger)';
-                caseBadgesHtml += `<span style="font-size:0.7rem;padding:2px 8px;border-radius:4px;background:${bgColor};color:${textColor};font-weight:600;">Case ${i + 1}: ${c.score}/100</span>`;
-            });
-            caseBadgesHtml += '</div>';
-        }
-
-        // RUNNING or QUEUED badge
-        let badgeHtml = '';
-        const normalizedStatus = normalizeRunStatus(run.status);
-        if (normalizedStatus === 'RUNNING') {
-            const startTs = run._startTimestamp || Date.now();
-            badgeHtml = `<span class="badge badge-running" style="display:inline-flex;align-items:center;gap:4px;">
-                <span class="loading-spinner" style="width:10px;height:10px;border-width:2px;"></span>
-                <span data-timer-start="${startTs}">0s</span>
-            </span>`;
-        } else if (normalizedStatus === 'QUEUED') {
-            badgeHtml = `<span class="badge badge-queued">Queued</span>`;
-        } else {
-            badgeHtml = `<span class="badge ${badgeClass}">${statusMeta.label}</span>`;
-        }
-
-        const scoreHtml = (normalizedStatus === 'RUNNING' || normalizedStatus === 'QUEUED')
-            ? '<span class="run-score" style="color:var(--text-muted);">-</span>'
-            : `<span class="run-score">${score}</span>`;
-
-        return `
-        <div class="run-card" data-run-id="${run.id}">
-            <div class="run-status-dot ${statusClass}"></div>
-            <div class="run-info">
-                <div class="run-name">${escapeHtml(run.name)}</div>
-                <div class="run-url">${escapeHtml(run.product_url || run.url || '')}</div>
-                ${caseBadgesHtml}
-            </div>
-            <div class="run-meta">
-                ${scoreHtml}
-                ${badgeHtml}
-                <span class="run-time">${time}</span>
-                ${normalizeRunStatus(run.status) !== 'RUNNING' ? `<button class="btn-delete-run" data-run-id="${run.id}" data-report-code="${run.tc_code || run.qa_code || ''}" title="Delete this run" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-muted);font-size:1rem;opacity:0.6;transition:opacity 0.2s;" onmouseover="this.style.opacity=1;this.style.color='var(--accent-danger)'" onmouseout="this.style.opacity=0.6;this.style.color='var(--text-muted)'">Delete</button>` : ''}
-            </div>
-        </div>`;
+        bindRecentRunCardEvents(listEl);
     }
 
     // ============================================================
@@ -738,7 +776,7 @@
 
         const filteredCases = state.testCases.filter(tc => {
             if (!query) return true;
-            return tc.name.toLowerCase().includes(query);
+            return (tc.name || '').toLowerCase().includes(query);
         });
 
         // Pagination for Test Cases
@@ -746,47 +784,125 @@
         const { page, pageSize } = state.pagination.testCases;
         const paginatedCases = filteredCases.slice((page - 1) * pageSize, page * pageSize);
 
-        listEl.innerHTML = paginatedCases.map((tc) => {
+        if (paginatedCases.length === 0) {
+            listEl.innerHTML = '<div class="empty-state">No test cases found.</div>';
+            return;
+        }
+
+        let tableHtml = `
+        <table class="tc-table">
+            <thead>
+                <tr>
+                    <th style="width: 40px;"><input type="checkbox" id="tc-select-all" style="width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent-primary);" ${state.selectedTestCases.size > 0 && paginatedCases.every(tc => state.selectedTestCases.has(tc.id)) ? 'checked' : ''} ${paginatedCases.length === 0 ? 'disabled' : ''}></th>
+                    <th>Name</th>
+                    <th>Product URL</th>
+                    <th>Status</th>
+                    <th>Result / Decision</th>
+                    <th>Reasons</th>
+                    <th>Last Run</th>
+                    <th style="width: 180px;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+        `;
+
+        const rowsHtml = paginatedCases.map((tc) => {
             const lastRun = state.testRuns
-                .filter((r) => r.test_case_id === tc.id)
-                .sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a))[0];
-            let statusBadge;
-            const statusLower = String(tc.status || '').toLowerCase();
-            if (statusLower === 'running') {
-                const runningRun = state.testRuns.find(r => r.test_case_id === tc.id && normalizeRunStatus(r.status) === 'RUNNING');
-                const startTs = (runningRun && runningRun._startTimestamp) || Date.now();
-                statusBadge = `<span class="badge badge-running" style="display:inline-flex;align-items:center;gap:4px;">
-                    <span class="loading-spinner" style="width:10px;height:10px;border-width:2px;"></span>
-                    <span data-timer-start="${startTs}">0s</span>
-                </span>`;
-            } else if (statusLower === 'queued' || statusLower === 'QUEUED') {
-                statusBadge = '<span class="badge badge-queued">Queued</span>';
-            } else if (lastRun) {
-                const lastRunStatus = getUiStatusMeta(lastRun.status);
-                statusBadge = `<span class="badge badge-${lastRunStatus.className}">${lastRunStatus.label}</span>`;
-            } else {
-                statusBadge = '<span class="badge badge-running" style="background:rgba(255,255,255,0.05);color:var(--text-muted);">Ready</span>';
+                .filter((r) => {
+                    const rId = String(r.test_case_id || '');
+                    const tcId = String(tc.id || '');
+                    if (tcId && rId === tcId) return true;
+                    const tcCode = tc.tc_code || tc.name;
+                    return tcCode && (r.tc_code === tcCode || r.report_code === tcCode);
+                })
+                .sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a))[0] || {};
+
+            const isBusinessStatus = (s) => ['PASS', 'FAIL', 'FATAL', 'REVIEW'].includes(String(s || '').toUpperCase());
+
+            let execStatus = tc.execution_status || 'READY';
+            let resStatus = isBusinessStatus(tc.status) ? tc.status : (tc.result_status || '');
+
+            if (lastRun && lastRun.id) {
+                execStatus = lastRun.execution_status || (normalizeRunStatus(lastRun.status) === 'RUNNING' ? 'RUNNING' : 'FINISHED');
+                resStatus = lastRun.result_status || (isBusinessStatus(lastRun.status) ? lastRun.status : resStatus);
             }
 
+            const execClass = String(execStatus).toLowerCase();
+            const resClass = String(resStatus).toLowerCase();
+
+            let execBadge = '';
+            let resBadge = '';
+            let reasonsHtml = '';
+
+            if (execClass === 'running') {
+                const runningRun = state.testRuns.find(r => (r.test_case_id === tc.id || r.tc_code === tc.tc_code) && normalizeRunStatus(r.status) === 'RUNNING');
+                const startTs = (runningRun && runningRun._startTimestamp);
+                execBadge = `<span class="badge badge-running"><span class="loading-spinner"></span><span ${startTs ? `data-timer-start="${startTs}"` : ''}>${startTs ? '0s' : '--'}</span></span>`;
+                resBadge = '-';
+            } else {
+                execBadge = `<span class="badge badge-${execClass}">${execStatus || 'READY'}</span>`;
+
+                if (resStatus && isBusinessStatus(resStatus)) {
+                    let resContent = resStatus;
+
+                    // Add score with Raw Score if available
+                    if (typeof lastRun.score === 'number') {
+                        const rawScore = lastRun.raw_score || lastRun.score;
+                        const hasOverride = rawScore !== lastRun.score;
+
+                        resContent += ` <span class="score-container">
+                            ${hasOverride ? `<span class="score-raw" title="Raw Score before override">${rawScore}</span>` : ''}
+                            <span style="opacity:0.8; font-weight:700;">${lastRun.score}</span>
+                        </span>`;
+                    }
+
+                    // Add passed/total
+                    if (typeof lastRun.total_cases === 'number' && lastRun.total_cases > 0) {
+                        resContent += ` <span style="opacity:0.6; font-size:0.75rem;">(${lastRun.passed_cases}/${lastRun.total_cases})</span>`;
+                    }
+
+                    resBadge = `
+                        <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
+                            <span class="badge badge-${resClass}">${resContent}</span>
+                            ${lastRun.decision ? `<span class="badge-decision">${lastRun.decision}</span>` : ''}
+                            ${lastRun.confidence_score ? `<span class="badge-decision-sub" style="font-size: 10px; opacity: 0.7;">Confidence: ${Math.round(lastRun.confidence_score * 100)}%</span>` : ''}
+                        </div>`;
+
+                    // Render Reasons
+                    const codes = lastRun.reason_codes || lastRun.decision_reason_codes || [];
+                    if (codes.length > 0) {
+                        reasonsHtml = `<div class="reason-tags">${codes.map(c => `<span class="reason-tag" title="${c}">${c}</span>`).join('')}</div>`;
+                    }
+                } else {
+                    resBadge = '-';
+                }
+            }
+
+            const isSelected = state.selectedTestCases.has(tc.id);
+
             return `
-            <div class="test-case-card glass-panel" data-tc-id="${tc.id}">
-                <div class="card-checkbox-container" style="position: absolute; top: 12px; left: 12px; z-index: 2;">
-                    <input type="checkbox" class="tc-checkbox" data-tc-id="${tc.id}" style="width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent-primary);">
-                </div>
-                <div class="card-header" style="padding-left: 30px;">
-                    <span class="card-title">${escapeHtml(tc.name)}</span>
-                    ${statusBadge}
-                </div>
-                <div class="card-url" style="padding-left: 30px;">${escapeHtml(tc.url)}</div>
-                <div class="card-actions">
-                    ${lastRun
-                    ? `<button class="btn-primary btn-sm btn-view" data-run-id="${lastRun.id}">View Report</button>
-                           <button class="btn-ghost btn-sm btn-rerun" data-tc-id="${tc.id}" style="color:var(--text-secondary)">Run Again</button>`
-                    : `<button class="btn-primary btn-sm btn-rerun" data-tc-id="${tc.id}">Run</button>`}
-                    <button class="btn-ghost btn-sm btn-delete" data-tc-id="${tc.id}">Delete</button>
-                </div>
-            </div>`;
+            <tr data-tc-id="${tc.id}">
+                <td><input type="checkbox" class="tc-checkbox" data-tc-id="${tc.id}" style="width: 18px; height: 18px; cursor: pointer;" ${isSelected ? 'checked' : ''}></td>
+                <td style="font-weight: 500;">${escapeHtml(tc.name || 'Unnamed Case')}</td>
+                <td class="td-url"><a href="${tc.url || '#'}" target="_blank">${escapeHtml(tc.url || 'No URL')}</a></td>
+                <td>${execBadge}</td>
+                <td>${resBadge}</td>
+                <td>${reasonsHtml || '-'}</td>
+                <td style="font-size: 0.85rem; white-space: nowrap;">${(lastRun && lastRun.id) ? formatTime(lastRun.test_time || lastRun.started_at) : '-'}</td>
+                <td>
+                    <div class="table-actions">
+                        ${(lastRun && lastRun.id)
+                    ? `<button class="btn-primary btn-xs btn-view" data-run-id="${lastRun.id}">Report</button>
+                               <button class="btn-ghost btn-xs btn-rerun" data-tc-id="${tc.id}" data-report-code="${escapeHtml(lastRun.report_code || lastRun.tc_code || tc.tc_code || '')}">Run</button>`
+                    : `<button class="btn-primary btn-xs btn-rerun" data-tc-id="${tc.id}" data-report-code="${escapeHtml(tc.tc_code || tc.name || '')}">Run</button>`}
+                        <button class="btn-ghost btn-xs btn-delete" data-tc-id="${tc.id}" style="color: var(--accent-danger);">Delete</button>
+                    </div>
+                </td>
+            </tr>`;
         }).join('');
+
+        tableHtml += rowsHtml + '</tbody></table>';
+        listEl.innerHTML = tableHtml;
 
         renderPagination('pagination-test-cases', 'testCases', totalItems);
 
@@ -805,7 +921,10 @@
                 if (tc) {
                     const isHeadless = $('#checkbox-headless') ? $('#checkbox-headless').checked : true;
                     const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
-                    triggerTestRun(tc, btn, isHeadless, useAi);
+                    triggerTestRun(tc, btn, isHeadless, useAi, {
+                        tcCodeOverride: btn.dataset.reportCode || tc.tc_code || tc.name,
+                        concurrency: 2,
+                    });
                 }
             });
         });
@@ -877,10 +996,17 @@
                 const statusMeta = getUiStatusMeta(run.status);
                 const scoreValue = Number(run.score);
                 return `
-                <div class="timeline-item ${statusMeta.className}" data-run-id="${run.id}" style="cursor: pointer;">
+                <div class="timeline-item ${statusMeta.className}" data-run-id="${run.id}" style="cursor: pointer; position: relative;">
                     <div class="timeline-content">
-                        <h3>${formatTime(getRunTimeIso(run))} <span class="badge badge-${statusMeta.className}" style="margin-left:8px">${statusMeta.label}</span></h3>
-                        <p>Score: ${Number.isFinite(scoreValue) ? scoreValue + '/100' : '-'} - ${run.total_steps || 0} steps</p>
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                            <div>
+                                <h3>${formatTime(getRunTimeIso(run))} <span class="badge badge-${statusMeta.className}" style="margin-left:8px">${statusMeta.label}</span></h3>
+                                <p>Score: ${Number.isFinite(scoreValue) ? scoreValue + '/100' : '-'} - ${run.total_steps || 0} steps</p>
+                            </div>
+                            ${(run.test_case_id && normalizeRunStatus(run.status) !== 'RUNNING') ? `
+                                <button class="btn-ghost btn-xs btn-run-from-history" data-tc-id="${run.test_case_id}" data-report-code="${escapeHtml(run.report_code || run.tc_code || '')}" title="Run this test case again" style="padding: 4px 12px;">Run</button>
+                            ` : ''}
+                        </div>
                     </div>
                 </div>`;
             }).join('');
@@ -889,9 +1015,27 @@
         el.innerHTML = html;
 
         el.querySelectorAll('.timeline-item').forEach((item) => {
-            item.addEventListener('click', () => {
+            item.addEventListener('click', (e) => {
+                if (e.target.closest('.btn-run-from-history')) return;
                 const run = state.testRuns.find((r) => r.id === item.dataset.runId);
                 if (run) openDetailModal(run);
+            });
+        });
+
+        // Attach run from history handlers for history page
+        el.querySelectorAll('.btn-run-from-history').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const tcId = btn.dataset.tcId;
+                const tc = state.testCases.find(t => String(t.id) === String(tcId));
+                if (tc) {
+                    const isHeadless = $('#checkbox-headless') ? $('#checkbox-headless').checked : true;
+                    const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
+                    triggerTestRun(tc, btn, isHeadless, useAi, {
+                        tcCodeOverride: btn.dataset.reportCode || tc.tc_code || tc.name,
+                        concurrency: 2,
+                    });
+                }
             });
         });
     }
@@ -902,13 +1046,43 @@
     function renderRunDetail(run) {
         let html = '';
 
-        // Score header
-        const statusMeta = getUiStatusMeta(run.status);
-        const scoreValue = Number(run.score);
+        // Header and Scores
+        // Dual-mode logic: if reliability data is present, use it, else fallback to legacy
+        const isV2 = run.decision && typeof run.quality_score !== 'undefined';
+        const uiTitle = isV2 ? run.decision : run.status;
+        const statusMeta = getUiStatusMeta(uiTitle);
+
+        // Main score display (Quality Score for V2, Legacy Score for V1)
+        const mainScoreValue = isV2 ? run.quality_score : Number(run.score);
+        const mainScoreLabel = isV2 ? 'Quality Score' : 'Score';
+
+        // Confidence Score Display (V2 only)
+        let confidenceHtml = '';
+        if (isV2) {
+            const cScore = (run.confidence_score * 100).toFixed(0);
+            const cClass = run.confidence_score >= 0.85 ? 'var(--accent-success)' : (run.confidence_score >= 0.6 ? 'var(--accent-warning)' : 'var(--accent-danger)');
+
+            // Build tooltip for signal detail breakdown
+            let signalTooltip = 'Confidence Details:\n';
+            if (run.signal_detail) {
+                signalTooltip += `- Coverage: ${(run.signal_detail.coverage * 100).toFixed(0)}%\n`;
+                signalTooltip += `- Agreement: ${(run.signal_detail.agreement * 100).toFixed(0)}%\n`;
+                signalTooltip += `- Stability: ${(run.signal_detail.stability * 100).toFixed(0)}%\n`;
+                signalTooltip += `- Pipeline: ${(run.signal_detail.pipeline_health * 100).toFixed(0)}%`;
+            }
+
+            confidenceHtml = `<span style="font-size:1rem;font-weight:600;color:${cClass};" title="${signalTooltip}">Confidence: ${cScore}%</span>`;
+        }
+
         html += `
-        <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;">
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
             <span class="badge badge-${statusMeta.className}" style="font-size:1rem;padding:8px 16px;">${statusMeta.label}</span>
-            <span style="font-size:1.5rem;font-weight:700;">${Number.isFinite(scoreValue) ? scoreValue + '/100' : '-'}</span>
+            <div style="display:flex;flex-direction:column;align-items:flex-start;">
+                <span style="font-size:1.5rem;font-weight:700;">${Number.isFinite(mainScoreValue) ? mainScoreValue + '/100' : '-'}</span>
+                <span style="font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;">${mainScoreLabel}</span>
+            </div>
+            ${confidenceHtml}
+            <div style="width:1px;height:30px;background:rgba(255,255,255,0.1);margin:0 8px;"></div>
             <span style="color:var(--text-muted);font-size:0.85rem;">${formatTime(getRunTimeIso(run))}</span>
             ${run.total_cases ? `<span style="color:var(--text-muted);font-size:0.85rem;">| ${run.passed_cases}/${run.total_cases} cases passed</span>` : ''}
         </div>`;
@@ -924,7 +1098,7 @@
                 <div style="display:flex; flex-wrap:wrap; gap:8px;">
                     ${run.variants_selected.map(v => `
                         <span style="background:rgba(99,102,241,0.15); color:var(--accent-primary); border:1px solid rgba(99,102,241,0.2); padding:4px 10px; border-radius:100px; font-size:0.8rem; font-weight:500;">
-                            ${escapeHtml(v)}
+                            ${escapeHtml(typeof v === 'string' ? v : (v.text || v.label || '-'))}
                         </span>
                     `).join('')}
                 </div>
@@ -1032,11 +1206,15 @@
         };
 
         timeline.forEach((step) => {
-            let stepClass = 'fail';
-            if (step.status === 'PASS') stepClass = 'pass';
-            else if (step.status === 'SKIPPED') stepClass = 'skip';
-
+            const isV2 = !!step.step_verdict;
             const isLifecycle = step.group_type === 'lifecycle';
+            const uiStatus = isLifecycle ? step.status : (isV2 ? step.step_verdict : step.status);
+
+            let stepClass = 'fail';
+            if (uiStatus === 'PASS') stepClass = 'pass';
+            else if (uiStatus === 'SKIPPED') stepClass = 'skip';
+            else if (uiStatus === 'WARNING') stepClass = 'warning';
+            else if (uiStatus === 'UNAVAILABLE') stepClass = 'warning';
 
             // Lifecycle steps: uniform boxed style
             if (isLifecycle) {
@@ -1049,10 +1227,10 @@
                     <div class="step-content">
                         <div class="step-header">
                             <div class="step-title-area">
-                                <span class="step-label">HÀNH ĐỘNG ${step.step_id}</span>
+                                <span class="step-label">HÃ€NH Äá»˜NG ${step.step_id}</span>
                                 <h4 class="step-action-title">${escapeHtml(label)}</h4>
                             </div>
-                            <span class="badge badge-${stepClass}">${step.status}</span>
+                            <span class="badge badge-${stepClass}">${uiStatus}</span>
                         </div>
                         
                         ${step.message ? `<div class="step-message" style="margin-top:4px;">${escapeHtml(step.message)}</div>` : ''}
@@ -1065,14 +1243,26 @@
                             </div>
                         </div>` : ''}
 
-                        ${step.state_after
-                        ? `<div class="step-images" style="margin-top:10px;">
-                            <div class="step-img-container" style="max-width:400px;">
-                                <img src="${escapeHtml(step.state_after)}" alt="Evidence">
-                                <div class="step-img-label">KẾT QUẢ</div>
+                        ${step.action === 'add_to_cart' && step.cart_evidence
+                        ? `<div class="step-images" style="margin-top:10px; display:flex; gap:12px; align-items:flex-start;">
+                            ${step.cart_evidence.panel ? `
+                            <div class="step-img-container" style="max-width:320px; flex:0 0 auto;">
+                                <img src="${escapeHtml(step.cart_evidence.panel)}" alt="Cart Panel">
+                                <div class="step-img-label">GIá»Ž HÃ€NG (PANEL)</div>
+                            </div>` : ''}
+                            <div class="step-img-container" style="max-width:320px; flex:0 0 auto;">
+                                <img src="${escapeHtml(step.cart_evidence.viewport)}" alt="Viewport Context">
+                                <div class="step-img-label">Bá»I Cáº¢NH (VIEWPORT)</div>
                             </div>
                         </div>`
-                        : ''}
+                        : (step.state_after
+                            ? `<div class="step-images" style="margin-top:10px;">
+                                <div class="step-img-container" style="max-width:400px;">
+                                    <img src="${escapeHtml(step.state_after)}" alt="Evidence">
+                                    <div class="step-img-label">Káº¾T QUáº¢</div>
+                                </div>
+                            </div>`
+                            : '')}
                     </div>
                 </div>`;
                 return;
@@ -1104,26 +1294,40 @@
                     <div class="step-content">
                         <div class="step-header">
                             <div class="step-title-area">
-                                <span class="step-label">HÀNH ĐỘNG ${step.step_id}</span>
+                                <span class="step-label">HÃ€NH Äá»˜NG ${step.step_id}</span>
                                 <h4 class="step-action-title">${escapeHtml(step.action)}: <span class="step-name">${escapeHtml(step.name)}</span></h4>
                             </div>
-                            <span class="badge badge-${stepClass}">${step.status}</span>
+                            <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+                                ${step.interaction_status ? `<span class="badge badge-${step.interaction_status.toLowerCase() === 'pass' ? 'pass' : 'fail'}" title="Interaction Status">ACT: ${step.interaction_status}</span>` : ''}
+                                ${step.validation_status ? `<span class="badge badge-${['PASS', 'FAIL', 'WARNING'].includes(step.validation_status) ? step.validation_status.toLowerCase() : 'warning'}" title="Validation Status">VAL: ${step.validation_status}</span>` : ''}
+                                <span class="badge badge-${stepClass}" title="Final Step Status">${uiStatus}</span>
+                            </div>
                         </div>
                         
                         <div class="step-selection-row">
                             ${thumbHtml}
-                            <span class="step-val-label">Lựa chọn: <span class="step-val-badge">${escapeHtml(step.value_chosen || '')}</span></span>
+                            <span class="step-val-label">Lá»±a chá»n: <span class="step-val-badge">${escapeHtml(step.value_chosen || '')}</span></span>
                             ${colorMetaHtml}
-                            ${step.code_evaluation && step.code_evaluation.diff_score >= 0
-                    ? `<span class="step-diff" title="Pixelmatch">Audit Code: ${step.code_evaluation.diff_score}%</span>`
-                    : (step.diff_score >= 0 ? `<span class="step-diff">Độ lệch: ${step.diff_score}%</span>` : '')}
+                            
+                            ${isV2 ? (
+                    `<div style="display:inline-flex;gap:8px;margin-left:auto;">
+                                    ${step.signals?.diff?.availability === 'AVAILABLE' ? `<span class="step-diff" title="Visual Diff">Diff: ${step.signals.diff.score}%</span>` : `<span class="step-diff" style="color:var(--text-muted);border-color:rgba(255,255,255,0.1)">Diff: N/A</span>`}
+                                    ${step.signals?.color?.availability === 'AVAILABLE' ? `<span class="step-diff" title="Color Verification">Color: ${step.signals.color.result}</span>` : ''}
+                                    ${step.signals?.temporal_impact?.severity && step.signals.temporal_impact.severity !== 'NONE' ? `<span class="step-diff" style="color:var(--accent-danger);border-color:var(--accent-danger)" title="Temporal Shift">Temp: ${step.signals.temporal_impact.severity}</span>` : `<span class="step-diff" style="color:var(--accent-success);opacity:0.6" title="Temporal Shift">Stable</span>`}
+                                 </div>`
+                ) : (
+                    // Legacy fallback
+                    `${step.code_evaluation && step.code_evaluation.diff_score >= 0
+                        ? `<span class="step-diff" title="Pixelmatch">Audit Code: ${step.code_evaluation.diff_score}%</span>`
+                        : (step.diff_score >= 0 ? `<span class="step-diff">Äá»™ lá»‡ch: ${step.diff_score}%</span>` : '')}`
+                )}
                         </div>
 
                         ${step.state_before || step.state_after
                     ? `<div class="step-images">
                                 <div class="step-img-container">
                                     ${step.state_before ? `<img src="${escapeHtml(step.state_before)}" alt="Before">` : '<div style="height:80px;display:flex;align-items:center;justify-content:center;color:var(--text-muted)">N/A</div>'}
-                                    <div class="step-img-label">TRƯỚC KHI</div>
+                                    <div class="step-img-label">TRÆ¯á»šC KHI</div>
                                 </div>
                                 <div class="step-arrow-section">
                                     ${step.option_thumbnail
@@ -1134,7 +1338,7 @@
                             ? `<div class="step-option-preview">
                                                 <div style="width:40px;height:40px;border-radius:50%;border:2px solid var(--accent-primary);background:${safeColorHex};margin:0 auto;"></div>
                                             </div>`
-                            : '<div class="step-arrow">→</div>')}
+                            : '<div class="step-arrow">â†’</div>')}
                                 </div>
                                 <div class="step-img-container">
                                     ${step.state_after ? `<img src="${escapeHtml(step.state_after)}" alt="After">` : '<div style="height:80px;display:flex;align-items:center;justify-content:center;color:var(--text-muted)">N/A</div>'}
@@ -1164,13 +1368,13 @@
                         
                         <div class="step-meta-grid" style="margin-top:15px; display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
                             <div class="meta-item" style="padding:8px 12px; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.03);">
-                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">AI Kiểm Định</span>
+                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">AI Kiá»ƒm Äá»‹nh</span>
                                 <span class="meta-value" style="font-size:0.85rem; font-weight:600; color:${step.ai_evaluation?.ai_verdict === 'PASS' ? 'var(--accent-success)' : 'var(--text-muted)'}">
                                     ${step.ai_evaluation?.ai_verdict || 'N/A'}
                                 </span>
                             </div>
                             <div class="meta-item" style="padding:8px 12px; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.03);">
-                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">Mã Audit</span>
+                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">MÃ£ Audit</span>
                                 <span class="meta-value" style="font-size:0.85rem; font-weight:600;">${step.code_evaluation?.status || 'N/A'}</span>
                             </div>
                         </div>
@@ -1200,24 +1404,54 @@
         let breakdownHtml = '';
         const sb = caseReport.score_breakdown;
         if (sb) {
-            const rows = [
-                { label: 'Base Score', value: sb.base_score, color: 'var(--text-primary)', isBase: true },
-                { label: `Visual Option Fails (x${sb.visual_fail_count || 0})`, value: sb.visual_fail_penalty, color: 'var(--accent-danger)', isPenalty: true },
-                { label: `Text Diff Fails (x${sb.text_diff_fail_count || 0})`, value: sb.text_diff_penalty, color: 'var(--accent-danger)', isPenalty: true },
-                { label: 'Open Page', value: sb.open_page_penalty, color: 'var(--accent-warning)', isPenalty: true },
-                { label: 'Load Customizer', value: sb.load_customizer_penalty, color: 'var(--accent-warning)', isPenalty: true },
-                { label: 'Preview Validation', value: sb.preview_validation_penalty, color: 'var(--accent-warning)', isPenalty: true },
-                { label: 'Add to Cart', value: sb.add_to_cart_penalty, color: 'var(--accent-warning)', isPenalty: true },
-            ];
+            let rows = [];
+            let finalScoreDisplay = '-';
+
+            // Check if using the new schema (has pixel/color/ocr/ai etc or total)
+            if (typeof sb.total !== 'undefined' || typeof sb.pixel !== 'undefined') {
+                rows = [
+                    { label: 'Pixel Match', value: sb.pixel, color: 'var(--text-primary)', isScore: true },
+                    { label: 'Color Verification', value: sb.color, color: 'var(--text-primary)', isScore: true },
+                    { label: 'Text/OCR Match', value: sb.ocr, color: 'var(--text-primary)', isScore: true },
+                    { label: 'AI Review', value: sb.ai, color: 'var(--text-primary)', isScore: true },
+                    { label: 'Flow Completion', value: sb.completion, color: 'var(--text-primary)', isScore: true },
+                    { label: 'Add to Cart', value: sb.cart, color: 'var(--text-primary)', isScore: true }
+                ];
+                finalScoreDisplay = sb.total ?? sb.final_score ?? caseReport.score ?? '-';
+            } else {
+                // Legacy schema
+                rows = [
+                    { label: 'Base Score', value: sb.base_score, color: 'var(--text-primary)', isBase: true },
+                    { label: `Visual Option Fails (x${sb.visual_fail_count || 0})`, value: sb.visual_fail_penalty, color: 'var(--accent-danger)', isPenalty: true },
+                    { label: `Text Diff Fails (x${sb.text_diff_fail_count || 0})`, value: sb.text_diff_penalty, color: 'var(--accent-danger)', isPenalty: true },
+                    { label: 'Open Page', value: sb.open_page_penalty, color: 'var(--accent-warning)', isPenalty: true },
+                    { label: 'Load Customizer', value: sb.load_customizer_penalty, color: 'var(--accent-warning)', isPenalty: true },
+                    { label: 'Preview Validation', value: sb.preview_validation_penalty, color: 'var(--accent-warning)', isPenalty: true },
+                    { label: 'Add to Cart', value: sb.add_to_cart_penalty, color: 'var(--accent-warning)', isPenalty: true },
+                ];
+                finalScoreDisplay = sb.final_score ?? caseReport.score ?? '-';
+            }
 
             let rowsHtml = '';
             rows.forEach(r => {
-                const display = r.isBase ? r.value : (r.value === 0 ? '0' : String(r.value));
-                const statusIcon = r.isBase ? '' : (r.value === 0 ? 'OK' : 'X');
-                const valColor = r.isBase ? r.color : (r.value === 0 ? 'var(--accent-success)' : r.color);
+                const rawVal = r.value;
+                const isUndef = typeof rawVal === 'undefined' || rawVal === null;
+                const display = isUndef ? '-' : (r.isBase || r.isScore ? rawVal : (rawVal === 0 ? '0' : String(rawVal)));
+
+                let statusIcon = '';
+                let valColor = 'var(--text-primary)';
+
+                if (r.isScore) {
+                    statusIcon = '';
+                    valColor = isUndef ? 'var(--text-muted)' : r.color;
+                } else {
+                    statusIcon = r.isBase ? '' : (isUndef ? '-' : (rawVal === 0 ? 'OK' : 'X'));
+                    valColor = r.isBase ? r.color : (isUndef ? 'var(--text-muted)' : (rawVal === 0 ? 'var(--accent-success)' : r.color));
+                }
+
                 rowsHtml += `
                 <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-                    <td style="padding:6px 12px; font-size:0.85rem; color:var(--text-secondary);">${statusIcon} ${r.label}</td>
+                    <td style="padding:6px 12px; font-size:0.85rem; color:var(--text-secondary);">${statusIcon ? statusIcon + ' ' : ''}${r.label}</td>
                     <td style="padding:6px 12px; font-size:0.85rem; font-weight:600; text-align:right; color:${valColor}; font-family:'Fira Code',monospace;">${display}</td>
                 </tr>`;
             });
@@ -1230,11 +1464,11 @@
                         ${rowsHtml}
                         <tr style="border-top:2px solid rgba(99,102,241,0.3);">
                             <td style="padding:8px 12px; font-size:0.95rem; font-weight:700; color:var(--text-primary);">Final Score</td>
-                            <td style="padding:8px 12px; font-size:1.1rem; font-weight:700; text-align:right; color:var(--accent-primary); font-family:'Fira Code',monospace;">${sb.final_score}/100</td>
+                            <td style="padding:8px 12px; font-size:1.1rem; font-weight:700; text-align:right; color:var(--accent-primary); font-family:'Fira Code',monospace;">${finalScoreDisplay}/100</td>
                         </tr>
                     </tbody>
                 </table>
-                <p style="margin:10px 0 0 0; font-size:0.75rem; color:var(--text-muted); font-style:italic;">Note: ${escapeHtml(sb.note || '')}</p>
+                ${sb.note ? `<p style="margin:10px 0 0 0; font-size:0.75rem; color:var(--text-muted); font-style:italic;">Note: ${escapeHtml(sb.note)}</p>` : ''}
             </div>`;
         }
 
@@ -1277,6 +1511,32 @@
             </div>`;
         }
 
+        // Deduction reasons section (New Layer)
+        let deductionHtml = '';
+        const dr = caseReport.score_deduction_reasons;
+        if (dr && Array.isArray(dr) && dr.length > 0) {
+            const reasonsHtml = dr.map(r => `
+                <div style="margin-bottom:8px; display:flex; gap:10px; align-items:flex-start;">
+                    <span style="background:rgba(239,68,68,0.1); color:#f87171; font-size:0.7rem; font-weight:700; padding:2px 6px; border-radius:4px; border:1px solid rgba(239,68,68,0.2); text-transform:uppercase; min-width:80px; text-align:center;">${escapeHtml(r.dimension)}</span>
+                    <div style="flex:1;">
+                        <div style="font-size:0.85rem; color:var(--text-primary); font-weight:500;">-${r.deducted_points} pts: ${escapeHtml(r.reason)}</div>
+                        ${r.evidence ? `<div style="font-size:0.75rem; color:var(--text-muted); font-family:'Fira Code', monospace; background:rgba(255,255,255,0.02); padding:4px 8px; border-radius:4px; margin-top:4px;">${escapeHtml(r.evidence)}</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+
+            deductionHtml = `
+            <div style="background:rgba(239,68,68,0.03); border:1px dashed rgba(239,68,68,0.25); border-radius:10px; padding:16px; margin-top:16px;">
+                <h4 style="margin:0 0 12px 0; font-size:0.95rem; color:#f87171; display:flex; align-items:center; gap:8px;">Why Score Reduced?</h4>
+                ${reasonsHtml}
+            </div>`;
+        } else if (caseReport.score < 100 && caseReport.status !== 'FATAL') {
+            deductionHtml = `
+            <div style="background:rgba(156,163,175,0.05); border:1px dashed rgba(156,163,175,0.2); border-radius:8px; padding:12px; margin-top:16px;">
+                <p style="margin:0; font-size:0.8rem; color:var(--text-muted); font-style:italic; text-align:center;">No specific deduction reasons found in this report version.</p>
+            </div>`;
+        }
+
         return `
         ${fatalHtml}
         <div class="eval-card" style="margin-top:0;">
@@ -1300,6 +1560,7 @@
                 </div>
             </div>
             ${breakdownHtml}
+            ${deductionHtml}
             ${errorListHtml}
         </div>`;
     }
@@ -1307,13 +1568,108 @@
     function renderAiReview(aiReview) {
         if (!aiReview) return '';
 
+        const verdict = aiReview.ai_verdict || 'N/A';
+        const vClass = verdict === 'PASS' ? 'badge-pass' : 'badge-fail';
+        const confidence = typeof aiReview.confidence === 'number' ? (aiReview.confidence * 100).toFixed(0) : '-';
+
+        // Check for new structured format
+        const isStructured = !!(aiReview.summary || aiReview.strengths || aiReview.issues);
+
+        if (isStructured) {
+            return `
+            <div class="eval-card" style="margin-top:0; border-left: 4px solid ${verdict === 'PASS' ? 'var(--accent-success)' : 'var(--accent-danger)'}; background: rgba(255,255,255,0.02);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:12px;">
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <h3 style="margin:0; color:var(--text-primary); font-size:1.1rem;">AI Final QA Review</h3>
+                        <span class="badge ${vClass}" style="font-size:0.85rem; padding:4px 12px;">${verdict}</span>
+                    </div>
+                    <div style="font-size:0.85rem; color:var(--text-secondary);">
+                        Confidence: <strong style="color:var(--accent-primary)">${confidence}%</strong>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:20px;">
+                    <p style="font-size:0.95rem; line-height:1.6; color:var(--text-primary); margin:0;">${escapeHtml(aiReview.summary || '')}</p>
+                </div>
+
+                ${aiReview.raw_image_description ? `
+                <div style="background:rgba(255,255,255,0.03); border-radius:8px; padding:12px; border:1px dashed rgba(255,255,255,0.1); margin-bottom:20px;">
+                    <h4 style="color:var(--text-muted); font-size:0.65rem; text-transform:uppercase; margin:0 0 8px 0; letter-spacing:0.05em;">AI Visual Perception (Raw)</h4>
+                    <p style="font-size:0.85rem; color:var(--text-secondary); margin:0; line-height:1.5; font-style:italic;">"${escapeHtml(aiReview.raw_image_description)}"</p>
+                </div>` : ''}
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-bottom:20px;">
+                    <!-- Good Points -->
+                    <div style="background:rgba(16,185,129,0.05); border-radius:8px; padding:12px; border:1px solid rgba(16,185,129,0.1);">
+                        <h4 style="color:var(--accent-success); font-size:0.75rem; text-transform:uppercase; margin:0 0 10px 0; letter-spacing:0.05em; display:flex; align-items:center; gap:6px;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                            Strengths
+                        </h4>
+                        <ul style="margin:0; padding-left:18px; font-size:0.85rem; color:var(--text-secondary); line-height:1.5;">
+                            ${(aiReview.strengths || []).map(s => `<li>${escapeHtml(s)}</li>`).join('')}
+                        </ul>
+                    </div>
+                    <!-- Issues -->
+                    <div style="background:rgba(239,68,68,0.05); border-radius:8px; padding:12px; border:1px solid rgba(239,68,68,0.1);">
+                        <h4 style="color:var(--accent-danger); font-size:0.75rem; text-transform:uppercase; margin:0 0 10px 0; letter-spacing:0.05em; display:flex; align-items:center; gap:6px;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            Detected Issues
+                        </h4>
+                        <ul style="margin:0; padding-left:18px; font-size:0.85rem; color:var(--text-secondary); line-height:1.5;">
+                            ${(aiReview.issues || []).length > 0
+                    ? (aiReview.issues || []).map(i => `<li>${escapeHtml(i)}</li>`).join('')
+                    : '<li style="list-style:none; margin-left:-18px; color:var(--text-muted); font-style:italic;">No issues found.</li>'}
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Detailed Notes -->
+                <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:12px; margin-bottom:20px; font-size:0.8rem;">
+                    <div style="padding:10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05);">
+                        <div style="color:var(--text-muted); font-size:0.65rem; text-transform:uppercase; margin-bottom:8px; font-weight:700;">Layout</div>
+                        <ul style="margin:0; padding-left:14px; color:var(--text-secondary); line-height:1.4;">
+                            ${(aiReview.layout_notes || []).length > 0
+                    ? aiReview.layout_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')
+                    : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
+                        </ul>
+                    </div>
+                    <div style="padding:10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05);">
+                        <div style="color:var(--text-muted); font-size:0.65rem; text-transform:uppercase; margin-bottom:8px; font-weight:700;">Colors</div>
+                        <ul style="margin:0; padding-left:14px; color:var(--text-secondary); line-height:1.4;">
+                            ${(aiReview.color_notes || []).length > 0
+                    ? aiReview.color_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')
+                    : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
+                        </ul>
+                    </div>
+                    <div style="padding:10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05);">
+                        <div style="color:var(--text-muted); font-size:0.65rem; text-transform:uppercase; margin-bottom:8px; font-weight:700;">Content</div>
+                        <ul style="margin:0; padding-left:14px; color:var(--text-secondary); line-height:1.4;">
+                            ${(aiReview.content_notes || []).length > 0
+                    ? aiReview.content_notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')
+                    : '<li style="list-style:none; margin-left:-14px; color:var(--text-muted); font-style:italic;">No notes</li>'}
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Recommendations -->
+                ${(aiReview.recommendations || []).length > 0 ? `
+                <div style="background:rgba(99,102,241,0.05); border-radius:8px; padding:12px; border:1px solid rgba(99,102,241,0.1);">
+                    <h4 style="color:var(--accent-primary); font-size:0.75rem; text-transform:uppercase; margin:0 0 8px 0; letter-spacing:0.05em;">Recommendations</h4>
+                    <ul style="margin:0; padding-left:18px; font-size:0.85rem; color:var(--text-secondary); line-height:1.5;">
+                        ${aiReview.recommendations.map(r => `<li>${escapeHtml(r)}</li>`).join('')}
+                    </ul>
+                </div>` : ''}
+            </div>`;
+        }
+
+        // Legacy rendering for old reports
         return `
         <div class="eval-card" style="margin-top:0; background:rgba(99,102,241,0.05); border-color:rgba(99,102,241,0.3);">
             <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px;">
                 <div>
                     <h3 style="color:var(--accent-primary); display:flex; align-items:center; gap:8px; margin: 0 0 8px 0;">
                         AI Final QA Review
-                        <span class="badge ${aiReview.ai_verdict === 'PASS' ? 'badge-pass' : 'badge-fail'}">${aiReview.ai_verdict}</span>
+                        <span class="badge ${vClass}">${verdict}</span>
                     </h3>
                     <p style="font-size:0.9rem; color:var(--text-primary); margin:0;">
                         <span style="color:var(--text-muted); font-size: 0.8rem; text-transform:uppercase;">Reason:</span><br>
@@ -1329,65 +1685,26 @@
                 </h4>
                 <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px;">
                     ${aiReview.detected_elements.map(el => {
-                        const toHex = (n) => {
-                            const v = Number(n);
-                            if (!Number.isFinite(v)) return '00';
-                            const byte = Math.max(0, Math.min(255, Math.round(v)));
-                            return byte.toString(16).padStart(2, '0');
-                        };
-                        const hasColor = el.color && typeof el.color.r === 'number' && typeof el.color.g === 'number' && typeof el.color.b === 'number';
-                        const rgb = hasColor ? `rgb(${el.color.r},${el.color.g},${el.color.b})` : '';
-                        const colorHex = hasColor ? `#${toHex(el.color.r)}${toHex(el.color.g)}${toHex(el.color.b)}`.toUpperCase() : '';
-                        const statusColor = el.match ? 'var(--accent-success)' : 'var(--accent-danger)';
-                        const expected = el.expected !== undefined && el.expected !== null ? String(el.expected) : 'N/A';
-                        const detected = el.detected !== undefined && el.detected !== null ? String(el.detected) : 'N/A';
-
-                        return `
-                            <div style="background: rgba(0,0,0,0.15); padding:10px; border-radius:8px; border-top: 3px solid ${el.match ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}; display:flex; flex-direction:column; gap:6px; position:relative; overflow:hidden;">
-                                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:4px;">
-                                    <div style="font-size:0.7rem; color:var(--text-muted); font-weight:700; line-height:1.2; text-transform:uppercase; flex:1;">
-                                        ${escapeHtml(el.field || 'Field')}
-                                    </div>
-                                    <div style="width:8px; height:8px; border-radius:50%; background:${statusColor}; flex-shrink:0; margin-top:2px;"></div>
+            const statusColor = el.match ? 'var(--accent-success)' : 'var(--accent-danger)';
+            return `
+                            <div style="background: rgba(0,0,0,0.15); padding:10px; border-radius:8px; border-top: 3px solid ${statusColor}; display:flex; flex-direction:column; gap:6px;">
+                                <div style="font-size:0.7rem; color:var(--text-muted); font-weight:700; line-height:1.2; text-transform:uppercase;">
+                                    ${escapeHtml(el.field || 'Field')}
                                 </div>
-                                
-                                <div style="display:flex; align-items:center; gap:8px; background:rgba(255,255,255,0.03); padding:6px 8px; border-radius:6px; justify-content:space-between;">
-                                    <div style="display:flex; flex-direction:column;">
-                                        <span style="font-size:0.55rem; color:var(--text-muted); text-transform:uppercase; line-height:1;">Exp</span>
-                                        <span style="font-size:0.8rem; font-weight:600;">${escapeHtml(expected)}</span>
-                                    </div>
-                                    <div style="font-size:0.8rem; color:var(--text-muted);">→</div>
-                                    <div style="display:flex; flex-direction:column; text-align:right;">
-                                        <span style="font-size:0.55rem; color:var(--text-muted); text-transform:uppercase; line-height:1;">Det</span>
-                                        <span style="font-size:0.8rem; font-weight:600; color:${statusColor}">${escapeHtml(detected)}</span>
-                                    </div>
-                                </div>
-
-                                ${rgb ? `
-                                <div style="display:flex; align-items:center; gap:6px; margin-top:2px; justify-content:flex-end;">
-                                    <span style="font-size:0.6rem; color:var(--text-muted); font-family:monospace;">${colorHex}</span>
-                                    <div style="width:14px; height:14px; border-radius:3px; background:${rgb}; border:1px solid rgba(255,255,255,0.2);"></div>
-                                </div>` : ''}
+                                <div style="font-size:0.8rem; font-weight:600;">Exp: ${escapeHtml(String(el.expected || 'N/A'))}</div>
+                                <div style="font-size:0.8rem; font-weight:600; color:${statusColor}">Det: ${escapeHtml(String(el.detected || 'N/A'))}</div>
                             </div>
                         `;
-                    }).join('')}
+        }).join('')}
                 </div>
             </div>` : ''}
 
             ${aiReview.reviewed_image ? `
             <div style="margin-top:20px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 16px;">
                 <h4 style="font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 12px; letter-spacing: 0.05em; display:flex; align-items:center; gap:8px;">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                     AI Final Review Evidence
                 </h4>
-                <div style="position:relative; width:100%; border-radius:10px; overflow:hidden; border:1px solid rgba(255,255,255,0.1); background:rgba(0,0,0,0.2);">
-                    <img src="${aiReview.reviewed_image}" alt="AI Review Image" 
-                         style="width:100%; height:auto; display:block; cursor:zoom-in; transition:transform 0.3s;"
-                         onclick="window.open(this.src)">
-                    <div style="position:absolute; bottom:10px; right:10px; background:rgba(0,0,0,0.6); color:white; padding:4px 10px; border-radius:20px; font-size:0.7rem; backdrop-filter:blur(4px); border:1px solid rgba(255,255,255,0.1);">
-                        Annotated Preview
-                    </div>
-                </div>
+                <img src="${aiReview.reviewed_image}" style="width:100%; border-radius:8px; border:1px solid rgba(255,255,255,0.1); cursor:zoom-in" onclick="window.open(this.src)">
             </div>` : ''}
         </div>`;
     }
@@ -1432,7 +1749,7 @@
     // Load settings on init
     async function loadSettings() {
         const local = loadFromStorage('qa_settings') || {};
-        
+
         // Try to fetch from server as primary source
         try {
             const res = await fetch('/api/settings');
@@ -1443,6 +1760,12 @@
 
                 if (s.headless) $('#setting-headless').value = s.headless;
                 else if (local.headless) $('#setting-headless').value = local.headless;
+
+                if (s.DAILY_NEW_TC_LIMIT !== undefined) {
+                    $('#setting-daily-new-limit').value = s.DAILY_NEW_TC_LIMIT;
+                } else if (local.DAILY_NEW_TC_LIMIT) {
+                    $('#setting-daily-new-limit').value = local.DAILY_NEW_TC_LIMIT;
+                }
 
                 // New Auto-Pass settings
                 if (s.DIFF_AUTO_PASS_ZERO !== undefined) {
@@ -1457,6 +1780,11 @@
                     $('#setting-custom-image-preview').style.display = 'block';
                     $('#setting-custom-image-preview').querySelector('img').src = `/images/${fname}?t=${Date.now()}`;
                 }
+
+                if (s.DAILY_REPORT_TIME !== undefined) $('#setting-daily-report-time').value = s.DAILY_REPORT_TIME;
+                if (s.DAILY_REPORT_TO !== undefined) $('#setting-daily-report-to').value = s.DAILY_REPORT_TO;
+                if (s.DAILY_REPORT_CC !== undefined) $('#setting-daily-report-cc').value = s.DAILY_REPORT_CC;
+
                 return;
             }
         } catch (e) {
@@ -1466,6 +1794,12 @@
         // Fallback to local storage
         if (local.timeout) $('#setting-timeout').value = local.timeout;
         if (local.headless) $('#setting-headless').value = local.headless;
+        if (local.DAILY_NEW_TC_LIMIT) $('#setting-daily-new-limit').value = local.DAILY_NEW_TC_LIMIT;
+        
+        if (local.DAILY_REPORT_TIME !== undefined) $('#setting-daily-report-time').value = local.DAILY_REPORT_TIME;
+        if (local.DAILY_REPORT_TO !== undefined) $('#setting-daily-report-to').value = local.DAILY_REPORT_TO;
+        if (local.DAILY_REPORT_CC !== undefined) $('#setting-daily-report-cc').value = local.DAILY_REPORT_CC;
+
         if (local.customImageFilename) {
             $('#setting-custom-image-preview').style.display = 'block';
             $('#setting-custom-image-preview').querySelector('img').src = `/images/${local.customImageFilename}?t=${Date.now()}`;
@@ -1489,17 +1823,22 @@
     $('#btn-save-settings').addEventListener('click', async () => {
         const timeout = $('#setting-timeout').value;
         const headless = $('#setting-headless').value;
+        const dailyNewLimit = $('#setting-daily-new-limit').value;
         const autoPassZero = $('#setting-auto-pass-zero').checked;
         const autoPassHigh = $('#setting-auto-pass-high').value;
-        
+
         const btn = $('#btn-save-settings');
         const ogText = btn.innerHTML;
 
-        const settingsToSave = { 
-            timeout, 
+        const settingsToSave = {
+            timeout,
             headless,
+            DAILY_NEW_TC_LIMIT: String(dailyNewLimit),
             DIFF_AUTO_PASS_ZERO: String(autoPassZero),
-            DIFF_AUTO_PASS_HIGH: String(autoPassHigh)
+            DIFF_AUTO_PASS_HIGH: String(autoPassHigh),
+            DAILY_REPORT_TIME: $('#setting-daily-report-time').value,
+            DAILY_REPORT_TO: $('#setting-daily-report-to').value,
+            DAILY_REPORT_CC: $('#setting-daily-report-cc').value
         };
 
         // Handle custom image upload
@@ -1565,19 +1904,70 @@
         fileInput.value = '';
     });
 
+    const btnRunDailyNew = $('#btn-run-daily-new');
+    if (btnRunDailyNew) {
+        btnRunDailyNew.addEventListener('click', async () => {
+            const limit = Number.parseInt($('#setting-daily-new-limit')?.value || '20', 10) || 20;
+            const headless = $('#setting-headless') ? $('#setting-headless').value !== 'false' : true;
+            const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
+            const currentSettings = loadFromStorage('qa_settings') || {};
+            const customImageFilename = currentSettings.customImageFilename || undefined;
+
+            const confirmed = await showPopup({
+                title: 'Queue Daily New Run',
+                message: `Queue toi da <b>${limit}</b> test case moi chua tung chay?<br><br>Server queue hien tai se xu ly theo hang doi, mac dinh 5 TC chay cung luc.`,
+                okText: 'Queue Now',
+                cancelText: 'Cancel',
+                isConfirm: true
+            });
+            if (!confirmed) return;
+
+            const originalHtml = btnRunDailyNew.innerHTML;
+            btnRunDailyNew.disabled = true;
+            btnRunDailyNew.innerHTML = '<span class="loading-spinner"></span> Queueing...';
+
+            try {
+                const res = await fetch('/api/batches/daily-new', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        limit,
+                        headless,
+                        useAi,
+                        customImageFilename
+                    })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+                await syncAllFromApi({ render: true, includeReports: false });
+                await showPopup({
+                    title: 'Daily Batch Queued',
+                    message: `Da queue <b>${data.queuedCount || 0}</b>/<b>${data.selectedCount || 0}</b> TC moi.<br>Batch ID: <code>${escapeHtml(data.batchId || '-')}</code><br>Queue concurrency: <b>${data.queueConcurrency || 5}</b>`
+                });
+            } catch (err) {
+                console.error('Daily new batch failed:', err);
+                await showPopup({ title: 'Batch Failed', message: 'Khong the queue daily batch: ' + err.message });
+            } finally {
+                btnRunDailyNew.disabled = false;
+                btnRunDailyNew.innerHTML = originalHtml;
+            }
+        });
+    }
+
     // ============================================================
     // API INTEGRATION: Trigger Backend Engine
     // ============================================================
-    async function triggerTestRun(testCase, buttonEl, isHeadless, useAi = true) {
+    async function triggerTestRun(testCase, buttonEl, isHeadless, useAi = true, options = {}) {
         if (!testCase || !testCase.url) return;
 
-        const testCaseId = testCase.id || testCase.url;
+        const testCaseId = String(testCase.id || testCase.url);
 
-        // ✅ 1. Ngăn chặn chạy trùng
+        // âœ… 1. NgÄƒn cháº·n cháº¡y trÃ¹ng
         if (state.runningTests.has(testCaseId)) {
-            await showPopup({ 
-                title: 'Busy', 
-                message: 'Test case này đang chạy! Vui lòng đợi hoàn thành.' 
+            await showPopup({
+                title: 'Busy',
+                message: 'Test case nÃ y Ä‘ang cháº¡y! Vui lÃ²ng Ä‘á»£i hoÃ n thÃ nh.'
             });
             return;
         }
@@ -1586,12 +1976,12 @@
         buttonEl.innerHTML = '<span class="loading-spinner"></span> Running...';
         buttonEl.disabled = true;
 
-        // ✅ 2. Cập nhật trạng thái LOCAL - KHÔNG sync toàn bộ
+        // âœ… 2. Cáº­p nháº­t tráº¡ng thÃ¡i LOCAL - KHÃ”NG sync toÃ n bá»™
         testCase.status = 'RUNNING';
         testCase._startTimestamp = Date.now();
         saveToStorage('qa_test_cases', state.testCases);
 
-        // ✅ 3. Chỉ re-render Test Cases page (nhanh hơn nhiều)
+        // âœ… 3. Chá»‰ re-render Test Cases page (nhanh hÆ¡n nhiá»u)
         if (state.currentPage === 'test-cases') {
             renderTestCases();
         }
@@ -1601,12 +1991,14 @@
 
         try {
             const currentSettings = loadFromStorage('qa_settings') || {};
+            const effectiveTcCode = String(options.tcCodeOverride || testCase.tc_code || testCase.name || '').trim();
+            const effectiveConcurrency = Number.parseInt(options.concurrency || currentSettings.concurrency || 2, 10) || 2;
             const endpoint = testCase.id
                 ? `/api/test-cases/${encodeURIComponent(testCase.id)}/run`
                 : '/api/run';
             const requestBody = testCase.id
-                ? { headless: isHeadless !== false, useAi, customImageFilename: currentSettings.customImageFilename }
-                : { headless: isHeadless !== false, useAi, customImageFilename: currentSettings.customImageFilename, url: testCase.url, tcCode: testCase.name };
+                ? { headless: isHeadless !== false, useAi, customImageFilename: currentSettings.customImageFilename, tcCode: effectiveTcCode, concurrency: effectiveConcurrency }
+                : { headless: isHeadless !== false, useAi, customImageFilename: currentSettings.customImageFilename, url: testCase.url, tcCode: effectiveTcCode, concurrency: effectiveConcurrency };
 
             const res = await fetch(endpoint, {
                 method: 'POST',
@@ -1621,24 +2013,28 @@
 
             const { runId } = await res.json();
 
-            // ✅ 4. Tạo run object cục bộ ngay lập tức
+            // âœ… 4. Táº¡o run object cá»¥c bá»™ ngay láº­p tá»©c
             const newRun = {
                 id: runId,
                 test_case_id: testCase.id,
                 name: testCase.name,
+                tc_code: effectiveTcCode || testCase.tc_code || testCase.name,
+                report_code: effectiveTcCode || testCase.tc_code || testCase.name,
                 url: testCase.url,
                 product_url: testCase.url,
                 status: 'RUNNING',
+                execution_status: 'RUNNING',
+                result_status: '',
                 _startTimestamp: Date.now(),
                 started_at: new Date().toISOString(),
             };
-            state.testRuns.push(newRun);
+            upsertRun(newRun);
             saveToStorage('qa_test_runs', state.testRuns);
 
             // Re-render nhanh
             if (state.currentPage === 'dashboard') renderDashboard();
 
-            // ✅ 5. Lưu element để SSE dọn dẹp sau này
+            // âœ… 5. LÆ°u element Ä‘á»ƒ SSE dá»n dáº¹p sau nÃ y
             state.activeElements.set(testCaseId, {
                 buttonEl,
                 progressEl,
@@ -1650,7 +2046,7 @@
         }
     }
 
-    // ✅ Hàm tạo progress element
+    // âœ… HÃ m táº¡o progress element
     function createProgressElement(tcCard, isHeadless, useAi) {
         if (!tcCard) return null;
 
@@ -1680,7 +2076,339 @@
         return progressEl;
     }
 
-    // ✅ Xử lý lỗi
+    // ============================================================
+    // EXPORT DATA (CSV)
+    // ============================================================
+    const btnExportCsv = $('#btn-export-csv');
+    if (btnExportCsv) {
+        btnExportCsv.addEventListener('click', () => {
+            exportToExcel();
+        });
+    }
+
+    function exportToExcel() {
+        try {
+            const selectedIds = new Set(Array.from(state.selectedTestCases).map(String));
+            if (selectedIds.size === 0) {
+                showPopup({ title: 'No Selection', message: 'Hay tick TC o All Test Cases truoc khi export.' });
+                return;
+            }
+
+            const selectedCases = state.testCases.filter((tc) => selectedIds.has(String(tc.id)));
+            const plainText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+            const joinList = (value, separator = '; ') => {
+                if (Array.isArray(value)) return value.filter(Boolean).map(plainText).filter(Boolean).join(separator);
+                return plainText(value);
+            };
+            const joinMultiline = (value) => {
+                if (Array.isArray(value)) return value.filter(Boolean).map(plainText).filter(Boolean).join('\n');
+                return plainText(value);
+            };
+            const formatPercent = (value) => {
+                const num = Number(value);
+                return Number.isFinite(num) ? `${Math.round(num * 100)}%` : '-';
+            };
+            const formatScore = (value) => {
+                const num = Number(value);
+                if (!Number.isFinite(num)) return '-';
+                return `${Math.round(num * 10) / 10}`;
+            };
+            const toYesNo = (value) => value === true ? 'Co' : value === false ? 'Khong' : '-';
+            const extractAiReview = (caseReport) => caseReport?.final_evaluation?.ai_review || {};
+            const getLatestRunForTc = (tc) => state.testRuns
+                .filter((run) => String(run.test_case_id) === String(tc.id) || (tc.tc_code && run.tc_code === tc.tc_code))
+                .sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a))[0] || null;
+            const normalizeExecutionStatus = (tc, run) =>
+                plainText(run?.execution_status || tc.execution_status || ((tc.status === 'QUEUED' || tc.status === 'RUNNING') ? tc.status : 'FINISHED')) || '-';
+            const normalizeBusinessStatus = (tc, run) =>
+                plainText(run?.report_status || run?.result_status || tc.result_status || ((tc.status !== 'QUEUED' && tc.status !== 'RUNNING') ? tc.status : '')) || '-';
+            const normalizeDecision = (run) =>
+                plainText(run?.decision || run?.result_status || run?.report_status || run?.status) || '-';
+            const aggregateCaseCount = (run, expectedDecision) => (run?.cases || []).filter((caseReport) => {
+                const decision = plainText(caseReport.decision || caseReport.status);
+                return decision === expectedDecision || (expectedDecision === 'FAIL' && decision === 'FATAL');
+            }).length;
+            const aggregateStepProgress = (run) => {
+                const totals = (run?.cases || []).reduce((acc, caseReport) => {
+                    acc.passed += Number(caseReport.passed_steps) || 0;
+                    acc.total += Number(caseReport.total_steps) || 0;
+                    return acc;
+                }, { passed: 0, total: 0 });
+                return totals.total ? `${totals.passed}/${totals.total}` : '-';
+            };
+            const collectDeductions = (run) => {
+                const deductions = [];
+                (run?.cases || []).forEach((caseReport, caseIndex) => {
+                    (caseReport?.score_deduction_reasons || []).forEach((item) => {
+                        deductions.push({
+                            caseLabel: plainText(caseReport.case_label || caseReport.label || `Case ${caseIndex + 1}`),
+                            dimension: plainText(item.dimension || '-'),
+                            deductedPoints: Number(item.deducted_points) || 0,
+                            reason: plainText(item.reason || '-')
+                        });
+                    });
+                });
+                return deductions.sort((a, b) => b.deductedPoints - a.deductedPoints);
+            };
+            const summarizeTopDeductions = (run, limit = 3) => {
+                const items = collectDeductions(run).slice(0, limit);
+                if (items.length === 0) return '-';
+                return items.map((item) => `${item.caseLabel}: ${item.dimension} (-${item.deductedPoints}) - ${item.reason}`).join('\n');
+            };
+            const joinCases = (run, picker) => (run?.cases || []).map((caseReport, index) => {
+                const aiReview = extractAiReview(caseReport);
+                const value = picker(caseReport, aiReview);
+                return value ? `${plainText(caseReport.case_label || caseReport.label || `Case ${index + 1}`)}: ${value}` : null;
+            }).filter(Boolean).join('\n');
+            const summarizeCaseOutcome = (caseReport) => {
+                const parts = [];
+                const decision = plainText(caseReport?.decision || caseReport?.status);
+                if (decision) parts.push(`Case ${decision}`);
+                if (Number.isFinite(Number(caseReport?.score))) parts.push(`diem ${formatScore(caseReport.score)}`);
+                if (Number.isFinite(Number(caseReport?.confidence_score))) parts.push(`do tin cay ${formatPercent(caseReport.confidence_score)}`);
+                if (Number.isFinite(Number(caseReport?.passed_steps)) && Number.isFinite(Number(caseReport?.total_steps))) {
+                    parts.push(`step ${caseReport.passed_steps}/${caseReport.total_steps}`);
+                }
+                const preview = caseReport?.final_evaluation?.preview_valid;
+                if (preview === true) parts.push('preview hop le');
+                const cart = plainText(caseReport?.final_evaluation?.cart_result);
+                if (cart) parts.push(`cart ${cart}`);
+                return parts.join(', ') || '-';
+            };
+            const buildRunReadableSummary = (tc, run) => {
+                if (!run) return 'Chua co lan chay de tong hop.';
+                const parts = [];
+                const decision = normalizeDecision(run);
+                parts.push(`Ket luan ${decision}`);
+                const passCases = Number(run.passed_cases) || aggregateCaseCount(run, 'PASS_AUTO');
+                const reviewCases = Number(run.review_cases) || aggregateCaseCount(run, 'REVIEW');
+                const failCases = Number(run.failed_cases) || aggregateCaseCount(run, 'FAIL');
+                const totalCases = Number(run.total_cases) || (run.cases || []).length;
+                if (totalCases) parts.push(`${passCases}/${totalCases} case PASS, ${reviewCases} REVIEW, ${failCases} FAIL`);
+                const steps = aggregateStepProgress(run);
+                if (steps !== '-') parts.push(`Tien do step ${steps}`);
+                if (Number.isFinite(Number(run.confidence_score))) parts.push(`Do tin cay ${formatPercent(run.confidence_score)}`);
+                const reasons = joinList(run.reason_codes);
+                if (reasons) parts.push(`Ly do giu ket qua: ${reasons}`);
+                const topDeduction = summarizeTopDeductions(run, 1);
+                if (topDeduction !== '-') parts.push(`Can xem: ${topDeduction}`);
+                return parts.join('. ');
+            };
+            const buildStepReadableSummary = (step) => {
+                const parts = [];
+                const finalStatus = plainText(step.step_verdict || step.status);
+                if (finalStatus) parts.push(`Buoc ${finalStatus}`);
+                if (plainText(step.value_chosen)) parts.push(`Gia tri "${plainText(step.value_chosen)}"`);
+                const ocrEval = step.ocr_evaluation || {};
+                if (ocrEval.found === true) {
+                    parts.push(`OCR thay text${ocrEval.matchDetail ? ` (${plainText(ocrEval.matchDetail)})` : ''}`);
+                } else if (ocrEval.found === false && plainText(ocrEval.text)) {
+                    parts.push('OCR doc duoc nhung chua xac nhan text');
+                }
+                const colorEval = step.color_evaluation || {};
+                if (plainText(colorEval.result)) parts.push(`Color ${plainText(colorEval.result)}`);
+                const temporal = step.temporal_impact || {};
+                if (plainText(temporal.severity)) parts.push(`Temporal ${plainText(temporal.severity)}`);
+                const aiEval = step.ai_evaluation || {};
+                if (plainText(aiEval.ai_verdict || aiEval.verdict)) parts.push(`AI ${plainText(aiEval.ai_verdict || aiEval.verdict)}`);
+                return parts.join('. ') || '-';
+            };
+
+            const selectedContexts = selectedCases.map((tc) => ({ tc, run: getLatestRunForTc(tc) }));
+
+            const summaryHeaders = [
+                'TC ID', 'Ten TC', 'Ma bao cao', 'URL san pham', 'Trang thai chay', 'Ket qua',
+                'Decision', 'Reason Codes', 'Diem', 'Diem tho', 'Do tin cay (%)',
+                'Case PASS', 'Case REVIEW', 'Case FAIL', 'Step PASS/Tong', 'Thoi gian',
+                'AI cuoi', 'AI tom tat (raw)', 'Strengths (raw)', 'Layout (raw)',
+                'Colors (raw)', 'Content (raw)', 'Ly do tru diem chinh', 'Tong ket de doc'
+            ];
+            const summaryRows = selectedContexts.map(({ tc, run }) => [
+                tc.id,
+                tc.name || '',
+                plainText(run?.report_code || run?.tc_code || tc.tc_code) || '-',
+                tc.url || '',
+                normalizeExecutionStatus(tc, run),
+                normalizeBusinessStatus(tc, run),
+                normalizeDecision(run),
+                joinList(run?.reason_codes) || '-',
+                formatScore(run?.score),
+                formatScore(run?.raw_score),
+                formatPercent(run?.confidence_score),
+                Number(run?.passed_cases) || aggregateCaseCount(run, 'PASS_AUTO'),
+                Number(run?.review_cases) || aggregateCaseCount(run, 'REVIEW'),
+                Number(run?.failed_cases) || aggregateCaseCount(run, 'FAIL'),
+                aggregateStepProgress(run),
+                run ? formatDurationMs(run.duration_ms || 0) : '-',
+                joinCases(run, (caseReport, aiReview) => {
+                    const verdict = plainText(aiReview.ai_verdict || aiReview.verdict);
+                    if (!verdict) return null;
+                    return `${verdict}${Number.isFinite(Number(aiReview.confidence)) ? ` (${formatPercent(aiReview.confidence)})` : ''}`;
+                }) || '-',
+                joinCases(run, (caseReport, aiReview) => plainText(aiReview.summary || aiReview.ai_reason || aiReview.raw_image_description)) || '-',
+                joinCases(run, (caseReport, aiReview) => joinList(aiReview.strengths)) || '-',
+                joinCases(run, (caseReport, aiReview) => joinList(aiReview.layout_notes)) || '-',
+                joinCases(run, (caseReport, aiReview) => joinList(aiReview.color_notes)) || '-',
+                joinCases(run, (caseReport, aiReview) => joinList(aiReview.content_notes)) || '-',
+                summarizeTopDeductions(run),
+                buildRunReadableSummary(tc, run)
+            ]);
+
+            const detailHeaders = [
+                'TC ID', 'Ten TC', 'Ma bao cao', 'Run ID', 'Case',
+                'Trang thai', 'Decision', 'Reason Codes', 'Diem', 'Diem tho', 'Do tin cay (%)',
+                'Step PASS', 'Tong step', 'Thoi gian', 'Preview hop le', 'Cart',
+                'AI cuoi', 'AI tu tin (%)', 'AI tom tat (raw)', 'Strengths (raw)',
+                'Layout (raw)', 'Colors (raw)', 'Content (raw)', 'Ly do ky thuat',
+                'Ly do tru diem', 'Tong ket de doc'
+            ];
+            const detailRows = [];
+            selectedContexts.forEach(({ tc, run }) => {
+                (run?.cases || []).forEach((caseReport, caseIndex) => {
+                    const aiReview = extractAiReview(caseReport);
+                    detailRows.push([
+                        tc.id,
+                        tc.name || '',
+                        plainText(run.report_code || run.tc_code || tc.tc_code) || '-',
+                        run.id || '',
+                        plainText(caseReport.case_label || caseReport.label || `Case ${caseIndex + 1}`),
+                        plainText(caseReport.status) || '-',
+                        plainText(caseReport.decision || caseReport.status) || '-',
+                        joinList(caseReport.reason_codes) || '-',
+                        formatScore(caseReport.score),
+                        formatScore(caseReport.raw_score),
+                        formatPercent(caseReport.confidence_score),
+                        Number(caseReport.passed_steps) || 0,
+                        Number(caseReport.total_steps) || 0,
+                        formatDurationMs(caseReport.duration_ms || 0),
+                        toYesNo(caseReport?.final_evaluation?.preview_valid),
+                        plainText(caseReport?.final_evaluation?.cart_result) || '-',
+                        plainText(aiReview.ai_verdict || aiReview.verdict) || '-',
+                        formatPercent(aiReview.confidence),
+                        plainText(aiReview.summary || aiReview.ai_reason || aiReview.raw_image_description) || '-',
+                        joinMultiline(aiReview.strengths) || '-',
+                        joinMultiline(aiReview.layout_notes) || '-',
+                        joinMultiline(aiReview.color_notes) || '-',
+                        joinMultiline(aiReview.content_notes) || '-',
+                        plainText(caseReport.status_reason) || '-',
+                        (caseReport.score_deduction_reasons || []).map((item) =>
+                            `${plainText(item.dimension || '-')}: -${Number(item.deducted_points) || 0} - ${plainText(item.reason || '-')}`
+                        ).join('\n') || '-',
+                        summarizeCaseOutcome(caseReport)
+                    ]);
+                });
+            });
+
+            const stepHeaders = [
+                'TC ID', 'Ten TC', 'Ma bao cao', 'Run ID', 'Case', 'Buoc #', 'Ten buoc',
+                'Action', 'Nhom', 'Gia tri da chon', 'Ket qua buoc', 'Interaction',
+                'Validation', 'Diff', 'SSIM', 'Meaningful Change', 'OCR', 'OCR tin cay (%)',
+                'OCR Match', 'Color', 'Temporal', 'AI Verdict', 'AI tin cay (%)',
+                'AI Reason (raw)', 'Nhan xet de doc'
+            ];
+            const stepRows = [];
+            selectedContexts.forEach(({ tc, run }) => {
+                (run?.cases || []).forEach((caseReport, caseIndex) => {
+                    (caseReport.timeline || []).forEach((step, stepIndex) => {
+                        const ocrEval = step.ocr_evaluation || {};
+                        const colorEval = step.color_evaluation || {};
+                        const temporal = step.temporal_impact || {};
+                        const aiEval = step.ai_evaluation || {};
+                        stepRows.push([
+                            tc.id,
+                            tc.name || '',
+                            plainText(run.report_code || run.tc_code || tc.tc_code) || '-',
+                            run.id || '',
+                            plainText(caseReport.case_label || caseReport.label || `Case ${caseIndex + 1}`),
+                            stepIndex + 1,
+                            plainText(step.name) || '-',
+                            plainText(step.action) || '-',
+                            plainText(step.group_type) || '-',
+                            plainText(step.value_chosen) || '-',
+                            plainText(step.step_verdict || step.status) || '-',
+                            plainText(step.interaction_status) || '-',
+                            plainText(step.validation_status) || '-',
+                            formatScore(step.diff_score),
+                            formatScore(step.ssim_score),
+                            typeof step.meaningful_change === 'boolean' ? (step.meaningful_change ? 'Co' : 'Khong') : '-',
+                            ocrEval.found === true ? 'Thay text' : (ocrEval.found === false ? 'Khong thay text' : '-'),
+                            formatPercent(Number(ocrEval.confidence) / 100),
+                            plainText(ocrEval.matchDetail) || '-',
+                            plainText(colorEval.result) || '-',
+                            plainText(temporal.severity) || '-',
+                            plainText(aiEval.ai_verdict || aiEval.verdict) || '-',
+                            formatPercent(aiEval.confidence),
+                            plainText(aiEval.ai_reason || aiEval.reason) || '-',
+                            buildStepReadableSummary(step)
+                        ]);
+                    });
+                });
+            });
+
+            const dictionaryHeaders = ['Muc', 'Dien giai'];
+            const dictionaryRows = [
+                ['THONG TIN CHUNG', 'File Excel nay duoc toi uu de doc nhanh khi review report.'],
+                ['Ngon ngu export', 'Tieu de cot va dien giai dung tieng Viet de doc nhanh. Noi dung AI raw duoc giu nguyen ngon ngu goc de tranh sai nghia.'],
+                ['Thoi gian export', new Date().toLocaleString()],
+                ['So TC duoc chon', selectedIds.size],
+                ['TC ID da chon', Array.from(selectedIds).join(', ')],
+                ['', ''],
+                ['Tong_Quan', 'Moi dong la 1 TC va lay lan chay moi nhat de tong hop.'],
+                ['Chi_Tiet_Case', 'Moi dong la 1 case. Day du diem, confidence, AI cuoi va ly do tru diem.'],
+                ['Chi_Tiet_Buoc', 'Moi dong la 1 step. Dung khi can truy vet buoc nao gay xung dot hoac bi tru diem.'],
+                ['', ''],
+                ['Trang thai chay', 'Trang thai tien trinh chay: QUEUED / RUNNING / FINISHED ...'],
+                ['Ket qua', 'Ket qua nghiep vu sau khi co report: PASS / REVIEW / FAIL / FATAL.'],
+                ['Decision', 'Phan loai cuoi cung cua engine: PASS_AUTO / REVIEW / FAIL_AUTO ...'],
+                ['Diem', 'Diem hien thi cuoi cung sau khi da tinh theo reliability.'],
+                ['Diem tho', 'Diem truoc khi he thong dieu chinh theo confidence / decision policy.'],
+                ['Do tin cay (%)', 'Muc do he thong tu tin vao ket luan cuoi cung.'],
+                ['Reason Codes', 'Ma ly do tong quan giu case o PASS / REVIEW / FAIL.'],
+                ['Ly do tru diem', 'Tong hop cac ly do bi tru diem co trong report.'],
+                ['AI tom tat (raw)', 'Text goc AI duoc giu nguyen de doi chieu khi can.'],
+                ['OCR Match', 'Match detail cua OCR: Exact match / Fuzzy match / khong xac nhan.'],
+                ['Temporal', 'Muc anh huong temporal neu co: HIGH / FATAL / ...'],
+                ['Nhan xet de doc', 'Cot he thong dien giai gon de reviewer doc nhanh ma khong can mo JSON.']
+            ];
+
+            if (typeof XLSX === 'undefined') {
+                throw new Error('XLSX library not loaded. Please check your internet connection and reload.');
+            }
+
+            const wb = XLSX.utils.book_new();
+
+            XLSX.utils.book_append_sheet(
+                wb,
+                XLSX.utils.aoa_to_sheet([summaryHeaders, ...summaryRows]),
+                'Tong_Quan'
+            );
+
+            XLSX.utils.book_append_sheet(
+                wb,
+                XLSX.utils.aoa_to_sheet([detailHeaders, ...detailRows]),
+                'Chi_Tiet_Case'
+            );
+
+            XLSX.utils.book_append_sheet(
+                wb,
+                XLSX.utils.aoa_to_sheet([stepHeaders, ...stepRows]),
+                'Chi_Tiet_Buoc'
+            );
+
+            XLSX.utils.book_append_sheet(
+                wb,
+                XLSX.utils.aoa_to_sheet([dictionaryHeaders, ...dictionaryRows]),
+                'Giai_Thich'
+            );
+
+            const timestamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+            XLSX.writeFile(wb, `bao_cao_qa_${timestamp}.xlsx`);
+
+        } catch (err) {
+            console.error('Export failed:', err);
+            showPopup({ title: 'Export Failed', message: err.message });
+        }
+    }
     async function handleTestRunError(testCase, testCaseId, buttonEl, progressEl, originalText, error) {
         await showPopup({ title: 'Test Failed', message: 'Error: ' + error.message });
         testCase.status = 'PENDING';
@@ -1690,7 +2418,7 @@
         buttonEl.innerHTML = originalText;
         buttonEl.disabled = false;
 
-        state.runningTests.delete(testCaseId);
+        state.runningTests.delete(String(testCaseId));
 
         if (state.currentPage === 'test-cases') renderTestCases();
     }
@@ -1767,7 +2495,7 @@
                 const dir = btn.dataset.dir;
                 if (dir === 'prev' && page > 1) state.pagination[sectionKey].page--;
                 else if (dir === 'next' && page < totalPages) state.pagination[sectionKey].page++;
-                
+
                 // Re-render only relevant section
                 if (sectionKey === 'dashboard') renderDashboard();
                 else if (sectionKey === 'testCases') renderTestCases();
@@ -1797,6 +2525,27 @@
         });
     }
 
+    function formatElapsedSeconds(totalSeconds) {
+        const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+
+        if (hours > 0) {
+            return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+        }
+        if (minutes > 0) {
+            return `${minutes}m ${String(secs).padStart(2, '0')}s`;
+        }
+        return `${secs}s`;
+    }
+
+    function formatDurationMs(durationMs) {
+        const ms = Number(durationMs);
+        if (!Number.isFinite(ms) || ms < 0) return '-';
+        return formatElapsedSeconds(ms / 1000);
+    }
+
     function normalizeRunStatus(status) {
         const s = String(status || '').toUpperCase();
         if (!s) return 'UNKNOWN';
@@ -1815,14 +2564,24 @@
                 return { className: 'fail', label: 'FAIL' };
             case 'FATAL':
                 return { className: 'fatal', label: 'FATAL' };
+            case 'REVIEW':
+                return { className: 'review', label: 'REVIEW' };
             case 'RUNNING':
                 return { className: 'running', label: 'RUNNING' };
             case 'QUEUED':
                 return { className: 'queued', label: 'QUEUED' };
+            case 'READY':
+                return { className: 'ready', label: 'READY' };
+            case 'FINISHED':
+                return { className: 'finished', label: 'FINISHED' };
             case 'COMPLETED':
-                return { className: 'pass', label: 'COMPLETED' };
+                return { className: 'finished', label: 'COMPLETED' };
             case 'FAILED':
                 return { className: 'fail', label: 'FAILED' };
+            case 'PENDING':
+                return { className: 'skip', label: 'PENDING' };
+            case 'SKIPPED':
+                return { className: 'skip', label: 'SKIPPED' };
             default:
                 return { className: 'fail', label: normalized || 'UNKNOWN' };
         }
@@ -1839,12 +2598,33 @@
         return Number.isFinite(t) ? t : 0;
     }
 
+    function normalizeConfidenceScore(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 0) return null;
+        return n > 1 ? Math.min(1, n / 100) : Math.min(1, n);
+    }
+
+    function normalizeReasonCodes(value) {
+        if (Array.isArray(value)) return value.filter(Boolean);
+        if (typeof value === 'string' && value.trim()) return value.split(/[;,]/).map(v => v.trim()).filter(Boolean);
+        return [];
+    }
+
     function normalizeApiRun(apiRun, existing = null) {
         const merged = { ...(existing || {}), ...(apiRun || {}) };
+        const normalizedStatus = normalizeRunStatus(merged.status || merged.execution_status);
         const normalized = {
             ...merged,
             id: merged.id || (existing && existing.id) || generateId(),
-            status: normalizeRunStatus(merged.status),
+            status: normalizedStatus,
+            execution_status: merged.execution_status || (['RUNNING', 'QUEUED'].includes(normalizedStatus) ? normalizedStatus : (existing && existing.execution_status) || ''),
+            result_status: merged.result_status || merged.report_status || (['PASS', 'FAIL', 'FATAL', 'REVIEW'].includes(normalizedStatus) ? normalizedStatus : (existing && existing.result_status) || ''),
+            report_status: merged.report_status || (['PASS', 'FAIL', 'FATAL', 'REVIEW'].includes(normalizedStatus) ? normalizedStatus : (existing && existing.report_status) || ''),
+            decision: merged.decision || (existing && existing.decision) || '',
+            reason_codes: normalizeReasonCodes(merged.reason_codes || merged.decision_reason_codes || (existing && existing.reason_codes)),
+            raw_score: Number.isFinite(Number(merged.raw_score)) ? Number(merged.raw_score) : (Number.isFinite(Number(existing && existing.raw_score)) ? Number(existing.raw_score) : Number(merged.score)),
+            quality_score: Number.isFinite(Number(merged.quality_score)) ? Number(merged.quality_score) : (Number.isFinite(Number(existing && existing.quality_score)) ? Number(existing.quality_score) : Number(merged.score)),
+            confidence_score: normalizeConfidenceScore(merged.confidence_score) ?? normalizeConfidenceScore(existing && existing.confidence_score),
             name: merged.name || (existing && existing.name) || merged.tc_code || merged.report_code || 'Untitled',
             product_url: merged.product_url || merged.url || (existing && existing.product_url) || '',
             url: merged.url || merged.product_url || (existing && existing.url) || '',
@@ -1854,9 +2634,8 @@
         if (normalized.status === 'RUNNING') {
             const startIso = normalized.started_at || normalized.created_at || normalized.test_time;
             const parsedTime = startIso ? new Date(startIso).getTime() : 0;
-            normalized._startTimestamp = Number.isFinite(parsedTime) && parsedTime > 0
-                ? parsedTime
-                : ((existing && existing._startTimestamp) || Date.now());
+            normalized._startTimestamp = (existing && existing._startTimestamp)
+                || (Number.isFinite(parsedTime) && parsedTime > 0 ? parsedTime : Date.now());
         }
 
         return normalized;
@@ -1864,7 +2643,11 @@
 
     function mergeRunWithReport(run, report) {
         const reportCode = report.tc_code || report.qa_code || run.report_code || run.tc_code || null;
-        return {
+        const businessStatusCandidates = [report.result_status, report.report_status, report.status]
+            .map((s) => String(s || '').toUpperCase())
+            .filter(Boolean);
+        const businessStatus = businessStatusCandidates.find((s) => ['PASS', 'FAIL', 'FATAL', 'REVIEW'].includes(s)) || '';
+        const merged = {
             ...run,
             ...report,
             id: run.id,
@@ -1876,14 +2659,29 @@
             product_url: report.product_url || run.product_url || run.url || '',
             url: run.url || report.product_url || '',
             test_time: report.test_time || run.test_time || run.finished_at || run.started_at || run.created_at || '',
-            status: normalizeRunStatus(report.status || run.status),
+            status: normalizeRunStatus(businessStatus || run.status || report.execution_status),
+            execution_status: report.execution_status || run.execution_status || (businessStatus ? 'FINISHED' : normalizeRunStatus(run.status)),
+            result_status: businessStatus || run.result_status || '',
+            report_status: report.report_status || businessStatus || run.report_status || '',
+            decision: report.decision || run.decision || '',
+            reason_codes: normalizeReasonCodes(report.reason_codes || report.decision_reason_codes || run.reason_codes),
+            raw_score: Number.isFinite(Number(report.raw_score)) ? Number(report.raw_score) : (Number.isFinite(Number(run.raw_score)) ? Number(run.raw_score) : Number(report.score ?? run.score)),
+            quality_score: Number.isFinite(Number(report.quality_score)) ? Number(report.quality_score) : (Number.isFinite(Number(run.quality_score)) ? Number(run.quality_score) : Number(report.score ?? run.score)),
+            confidence_score: normalizeConfidenceScore(report.confidence_score) ?? normalizeConfidenceScore(run.confidence_score),
+            score: Number.isFinite(Number(report.score)) ? Number(report.score) : run.score,
+            total_cases: Number.isFinite(Number(report.total_cases)) ? Number(report.total_cases) : run.total_cases,
+            passed_cases: Number.isFinite(Number(report.passed_cases)) ? Number(report.passed_cases) : run.passed_cases,
+            failed_cases: Number.isFinite(Number(report.failed_cases)) ? Number(report.failed_cases) : run.failed_cases,
+            total_steps: Number.isFinite(Number(report.total_steps)) ? Number(report.total_steps) : run.total_steps,
+            passed_steps: Number.isFinite(Number(report.passed_steps)) ? Number(report.passed_steps) : run.passed_steps,
+            failed_steps: Number.isFinite(Number(report.failed_steps)) ? Number(report.failed_steps) : run.failed_steps,
         };
-        
-        // Force recount startTimestamp if it's still running
+
         if (merged.status === 'RUNNING') {
-            const startIso = merged.test_time;
+            const startIso = merged.started_at || merged.test_time;
             const parsedTime = startIso ? new Date(startIso).getTime() : 0;
-            merged._startTimestamp = Number.isFinite(parsedTime) && parsedTime > 0 ? parsedTime : (run._startTimestamp || Date.now());
+            merged._startTimestamp = run._startTimestamp
+                || (Number.isFinite(parsedTime) && parsedTime > 0 ? parsedTime : Date.now());
         }
 
         return merged;
@@ -1891,13 +2689,22 @@
 
     function normalizeReportAsRun(report) {
         const code = report.tc_code || report.qa_code || null;
+        const status = normalizeRunStatus(report.result_status || report.report_status || report.status || 'COMPLETED');
         return {
             id: report.id || `report_${code || Date.now()}`,
             name: report.name || report.test_case_label || code || 'Untitled',
             product_url: report.product_url || '',
             url: report.product_url || '',
             test_time: report.test_time || '',
-            status: normalizeRunStatus(report.status || 'COMPLETED'),
+            status,
+            execution_status: report.execution_status || (['RUNNING', 'QUEUED'].includes(status) ? status : 'FINISHED'),
+            result_status: report.result_status || report.report_status || (['PASS', 'FAIL', 'FATAL', 'REVIEW'].includes(status) ? status : ''),
+            report_status: report.report_status || report.result_status || '',
+            decision: report.decision || '',
+            reason_codes: normalizeReasonCodes(report.reason_codes || report.decision_reason_codes),
+            raw_score: Number.isFinite(Number(report.raw_score)) ? Number(report.raw_score) : Number(report.score),
+            quality_score: Number.isFinite(Number(report.quality_score)) ? Number(report.quality_score) : Number(report.score),
+            confidence_score: normalizeConfidenceScore(report.confidence_score),
             score: report.score,
             total_steps: report.total_steps || 0,
             passed_steps: report.passed_steps || 0,
@@ -1916,26 +2723,36 @@
     }
 
     function upsertRun(nextRun) {
-        const idx = state.testRuns.findIndex((r) => r.id === nextRun.id);
-        if (idx >= 0) {
-            state.testRuns[idx] = nextRun;
-        } else {
+        const nextId = String(nextRun && nextRun.id || '');
+        if (!nextId) {
             state.testRuns.push(nextRun);
+            return;
         }
+
+        let inserted = false;
+        const deduped = [];
+        for (const run of state.testRuns) {
+            if (String(run.id) === nextId) {
+                if (!inserted) {
+                    deduped.push({ ...run, ...nextRun });
+                    inserted = true;
+                }
+                continue;
+            }
+            deduped.push(run);
+        }
+
+        if (!inserted) deduped.push(nextRun);
+        state.testRuns = deduped;
     }
 
     function escapeHtml(str) {
         const div = document.createElement('div');
-        div.textContent = str;
+        div.textContent = String(str ?? '');
         return div.innerHTML;
     }
 
-    /**
-     * Show a custom popup modal (Alert or Confirm)
-     * @param {Object} options { title, message, okText, cancelText, isConfirm }
-     * @returns {Promise<boolean>}
-     */
-    function showPopup({ title = 'Notification', message = '', okText = 'OK', cancelText = 'Cancel', isConfirm = false } = {}) {
+    function showPopup({ title = 'Notification', message = '', okText = 'OK', cancelText = 'Cancel', isConfirm = false, confirm = false } = {}) {
         return new Promise((resolve) => {
             const modal = $('#modal-popup');
             const titleEl = $('#popup-title');
@@ -1943,13 +2760,23 @@
             const okBtn = $('#btn-popup-ok');
             const cancelBtn = $('#btn-popup-cancel');
             const closeBtn = $('#btn-close-popup');
+            const isConfirmMode = Boolean(isConfirm || confirm);
+
+            if (!modal || !titleEl || !messageEl || !okBtn || !cancelBtn || !closeBtn) {
+                if (isConfirmMode) {
+                    resolve(window.confirm(String(message).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '')));
+                } else {
+                    window.alert(String(message).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''));
+                    resolve(true);
+                }
+                return;
+            }
 
             titleEl.textContent = title;
             messageEl.innerHTML = message;
             okBtn.textContent = okText;
             cancelBtn.textContent = cancelText;
-
-            cancelBtn.style.display = isConfirm ? 'inline-flex' : 'none';
+            cancelBtn.style.display = isConfirmMode ? 'inline-flex' : 'none';
 
             function cleanup() {
                 modal.style.display = 'none';
@@ -1971,7 +2798,6 @@
             okBtn.addEventListener('click', onOk);
             cancelBtn.addEventListener('click', onCancel);
             closeBtn.addEventListener('click', onCancel);
-
             modal.style.display = 'flex';
         });
     }
@@ -1992,37 +2818,6 @@
             return null;
         }
     }
-
-    // ============================================================
-    // SEARCH
-    // ============================================================
-    $('#search-input').addEventListener('input', (e) => {
-        const query = e.target.value.toLowerCase().trim();
-        if (!query) {
-            renderDashboard();
-            return;
-        }
-
-        const filtered = state.testRuns.filter((r) =>
-            (r.name || '').toLowerCase().includes(query) ||
-            (r.product_url || '').toLowerCase().includes(query) ||
-            (r.url || '').toLowerCase().includes(query)
-        );
-
-        const listEl = $('#recent-runs-list');
-        if (filtered.length === 0) {
-            listEl.innerHTML = `<div class="empty-state glass-panel"><p>No results for "${escapeHtml(query)}".</p></div>`;
-            return;
-        }
-
-        listEl.innerHTML = filtered.map((run) => renderRunCard(run)).join('');
-        listEl.querySelectorAll('.run-card').forEach((card) => {
-            card.addEventListener('click', () => {
-                const run = state.testRuns.find((r) => r.id === card.dataset.runId);
-                if (run) openDetailModal(run);
-            });
-        });
-    });
 
     // ============================================================
     // INIT & DATA FETCHING
@@ -2049,8 +2844,7 @@
     function updateBatchUI() {
         const runSelectedBtn = $('#btn-run-selected');
         const countSpan = $('#selected-count');
-        const checked = $$('.tc-checkbox:checked');
-        const total = checked.length;
+        const total = state.selectedTestCases.size;
         if (runSelectedBtn) {
             runSelectedBtn.style.display = total > 0 ? 'inline-flex' : 'none';
             if (countSpan) countSpan.textContent = total;
@@ -2064,7 +2858,7 @@
         runSelectedBtn.disabled = true;
         const originalHtml = runSelectedBtn.innerHTML;
         runSelectedBtn.innerHTML = '<span class="loading-spinner" style="width:12px;height:12px;border-width:2px;margin-right:8px;"></span>Queuing...';
-        
+
         const isHeadless = $('#checkbox-headless') ? $('#checkbox-headless').checked : true;
         const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
         const batchId = 'BATCH_' + Date.now();
@@ -2072,15 +2866,15 @@
         for (const id of ids) {
             try {
                 // Small delay to prevent network congestion
-                await new Promise(r => setTimeout(r, 80)); 
+                await new Promise(r => setTimeout(r, 80));
                 await fetch(`/api/test-cases/${id}/run`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        headless: isHeadless, 
-                        useAi: useAi, 
+                    body: JSON.stringify({
+                        headless: isHeadless,
+                        useAi: useAi,
                         batchId: batchId,
-                        source: 'dashboard-batch' 
+                        source: 'dashboard-batch'
                     })
                 });
             } catch (err) {
@@ -2089,28 +2883,44 @@
         }
 
         // Uncheck all after starting
-        $$('.tc-checkbox').forEach(cb => cb.checked = false);
+        state.selectedTestCases.clear();
         updateBatchUI();
+        if (state.currentPage === 'test-cases') renderTestCases();
+
         runSelectedBtn.disabled = false;
         runSelectedBtn.innerHTML = originalHtml;
-        
+
         // Final sync and render
         await syncAllFromApi({ render: true, includeReports: false });
     }
 
     // Event listeners attached ONCE
     document.addEventListener('click', async (e) => {
-        if (e.target.id === 'btn-select-all') {
-            const checkboxes = $$('.tc-checkbox');
-            const anyUnchecked = Array.from(checkboxes).some(cb => !cb.checked);
-            checkboxes.forEach(cb => cb.checked = anyUnchecked);
+        if (e.target.id === 'tc-select-all' || e.target.id === 'btn-select-all') {
+            const listEl = $('#test-cases-list');
+            if (!listEl) return;
+
+            const visibleCheckboxes = listEl.querySelectorAll('.tc-checkbox');
+            const allVisibleSelected = Array.from(visibleCheckboxes).every(cb => state.selectedTestCases.has(cb.dataset.tcId));
+
+            visibleCheckboxes.forEach(cb => {
+                const id = cb.dataset.tcId;
+                if (allVisibleSelected) {
+                    state.selectedTestCases.delete(id);
+                } else {
+                    state.selectedTestCases.add(id);
+                }
+            });
+
+            renderTestCases();
             updateBatchUI();
+            return;
         }
 
         if (e.target.closest('#btn-run-selected')) {
-            const selectedIds = Array.from($$('.tc-checkbox:checked')).map(cb => cb.dataset.tcId);
+            const selectedIds = Array.from(state.selectedTestCases);
             if (selectedIds.length === 0) return;
-            
+
             const confirmed = await showPopup({
                 title: 'Batch Run',
                 message: `Run <b>${selectedIds.length}</b> test cases?`,
@@ -2127,7 +2937,17 @@
 
     document.addEventListener('change', (e) => {
         if (e.target.classList.contains('tc-checkbox')) {
+            const id = e.target.dataset.tcId;
+            if (e.target.checked) state.selectedTestCases.add(id);
+            else state.selectedTestCases.delete(id);
             updateBatchUI();
+
+            // Cáº­p nháº­t checkbox Select All náº¿u cáº§n
+            const selectAllCb = $('#tc-select-all');
+            if (selectAllCb) {
+                const visibleIds = Array.from($$('.tc-checkbox')).map(cb => cb.dataset.tcId);
+                selectAllCb.checked = visibleIds.every(id => state.selectedTestCases.has(id));
+            }
         }
     });
 
@@ -2297,7 +3117,7 @@
     const crawlerProgressBar = document.getElementById('crawler-progress-bar');
     const crawlerProgressLabel = document.getElementById('crawler-progress-label');
     const crawlerProgressCount = document.getElementById('crawler-progress-count');
-    
+
     const checkAllProducts = document.getElementById('check-all-products');
     const btnDeleteSelectedProducts = document.getElementById('btn-delete-selected-products');
     const selectedProductsCount = document.getElementById('selected-products-count');
@@ -2315,22 +3135,22 @@
 
     function renderProducts() {
         if (!productsTbody) return;
-        
+
         productsTbody.innerHTML = '';
         const totalItems = state.products.length;
         const { page, pageSize } = state.pagination.products;
         const paginatedProducts = state.products.slice((page - 1) * pageSize, page * pageSize);
-        
+
         const existingUrls = new Set(state.testCases.map(tc => tc.url));
 
         productsEmpty.style.display = 'none';
         productsCount.textContent = `${totalItems} products found`;
-        
+
         paginatedProducts.forEach(p => {
             const tr = document.createElement('tr');
             tr.style.borderBottom = '1px solid var(--border-subtle)';
             tr.style.transition = 'background 0.2s ease';
-            
+
             const key = `${p.product_id}|${p.platform}`;
             const isChecked = state.selectedProducts.has(key);
 
@@ -2348,17 +3168,17 @@
                 </td>
                 <td style="padding: 12px 16px; font-size: 0.75rem; color: var(--text-muted);">${new Date(p.checked_at).toLocaleString()}</td>
                 <td style="padding: 12px 16px; display: flex; gap: 4px;">
-                    ${existingUrls.has(p.final_url || p.redirect_url) 
-                        ? `<button class="btn-ghost btn-sm" style="color: var(--text-muted); cursor: not-allowed;" title="Test case already exists" disabled>TC Exists</button>`
-                        : `<button class="btn-ghost btn-sm btn-create-tc" style="color: var(--accent-success);" data-pid="${p.product_id}" data-platform="${p.platform}" data-key="${key}">Create TC</button>`
-                    }
+                    ${existingUrls.has(p.final_url || p.redirect_url)
+                    ? `<button class="btn-ghost btn-sm" style="color: var(--text-muted); cursor: not-allowed;" title="Test case already exists" disabled>TC Exists</button>`
+                    : `<button class="btn-ghost btn-sm btn-create-tc" style="color: var(--accent-success);" data-pid="${p.product_id}" data-platform="${p.platform}" data-key="${key}">Create TC</button>`
+                }
                     <button class="btn-ghost btn-sm btn-delete-product" data-pid="${p.product_id}" data-platform="${p.platform}">Delete</button>
                 </td>
             `;
-            
+
             tr.addEventListener('mouseenter', () => tr.style.background = 'rgba(255,255,255,0.02)');
             tr.addEventListener('mouseleave', () => tr.style.background = 'transparent');
-            
+
             productsTbody.appendChild(tr);
         });
 
@@ -2374,7 +3194,7 @@
         if (selectedCount > 0) {
             btnDeleteSelectedProducts.style.display = 'flex';
             if (btnConvert) btnConvert.style.display = 'flex';
-            
+
             selectedProductsCount.textContent = selectedCount;
             if (convertCount) convertCount.textContent = selectedCount;
         } else {
@@ -2387,24 +3207,24 @@
         btnStartCrawl.addEventListener('click', async () => {
             const idsText = crawlerIdsInput.value.trim();
             if (!idsText) return showPopup({ title: 'Error', message: 'Please enter at least one Product ID.' });
-            
+
             const ids = idsText.split('\n').map(s => s.trim()).filter(s => s.length > 0);
             const platformRadio = document.querySelector('input[name="crawler-platform"]:checked');
             const platform = platformRadio ? platformRadio.value : 'printerval.com';
-            
+
             btnStartCrawl.disabled = true;
             crawlerProgressDiv.style.display = 'block';
             crawlerProgressBar.style.width = '0%';
             crawlerProgressLabel.textContent = 'Starting crawler...';
             crawlerProgressCount.textContent = `0/${ids.length}`;
-            
+
             try {
                 const res = await fetch('/api/products/crawl', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ids, platform })
                 });
-                
+
                 if (!res.ok) throw new Error('Failed to start crawler');
             } catch (err) {
                 console.error('Crawler start error:', err);
@@ -2444,7 +3264,7 @@
             if (e.target.classList.contains('btn-create-tc')) {
                 const key = e.target.dataset.key;
                 const pid = e.target.dataset.pid;
-                
+
                 try {
                     const res = await fetch('/api/products/convert-to-test-cases', {
                         method: 'POST',
@@ -2467,11 +3287,11 @@
             if (e.target.classList.contains('btn-delete-product')) {
                 const pid = e.target.dataset.pid;
                 const platform = e.target.dataset.platform;
-                
-                if (await showPopup({ 
-                    title: 'Delete Product', 
-                    message: `Are you sure you want to delete product ${pid} (${platform})?`, 
-                    confirm: true 
+
+                if (await showPopup({
+                    title: 'Delete Product',
+                    message: `Are you sure you want to delete product ${pid} (${platform})?`,
+                    confirm: true
                 })) {
                     try {
                         const res = await fetch('/api/products/batch-delete', {
@@ -2492,10 +3312,10 @@
     if (btnConvertToTestCases) {
         btnConvertToTestCases.addEventListener('click', async () => {
             const count = state.selectedProducts.size;
-            if (await showPopup({ 
-                title: 'Create Test Cases', 
-                message: `Create test cases for ${count} selected products?`, 
-                confirm: true 
+            if (await showPopup({
+                title: 'Create Test Cases',
+                message: `Create test cases for ${count} selected products?`,
+                confirm: true
             })) {
                 try {
                     const res = await fetch('/api/products/convert-to-test-cases', {
@@ -2523,10 +3343,10 @@
     if (btnDeleteSelectedProducts) {
         btnDeleteSelectedProducts.addEventListener('click', async () => {
             const count = state.selectedProducts.size;
-            if (await showPopup({ 
-                title: 'Delete Selected', 
-                message: `Are you sure you want to delete ${count} selected products?`, 
-                confirm: true 
+            if (await showPopup({
+                title: 'Delete Selected',
+                message: `Are you sure you want to delete ${count} selected products?`,
+                confirm: true
             })) {
                 try {
                     const res = await fetch('/api/products/batch-delete', {
@@ -2548,21 +3368,21 @@
 
     function handleSSECrawlerProgress(data) {
         if (!crawlerProgressDiv) return;
-        
+
         const { count, total, id, result, success } = data;
         const percent = Math.floor((count / total) * 100);
-        
+
         crawlerProgressBar.style.width = `${percent}%`;
         crawlerProgressLabel.textContent = `Processing ${id}... (${success ? 'Success' : 'Failed'})`;
         crawlerProgressCount.textContent = `${count}/${total}`;
-        
+
         const existingIdx = state.products.findIndex(p => p.product_id === result.product_id && p.platform === result.platform);
         if (existingIdx >= 0) {
             state.products[existingIdx] = result;
         } else {
             state.products.unshift(result);
         }
-        
+
         // Use debounced render to avoid UI lag during parallel updates
         if (state.currentPage === 'products') {
             debouncedRenderProducts();
@@ -2580,18 +3400,18 @@
 
     function handleSSECrawlerFinished(data) {
         if (!crawlerProgressDiv) return;
-        
+
         crawlerProgressBar.style.width = '100%';
         crawlerProgressLabel.textContent = 'Crawling completed!';
         btnStartCrawl.disabled = false;
-        
+
         setTimeout(() => {
             crawlerProgressDiv.style.display = 'none';
             fetchProducts(true);
         }, 3000);
     }
 
-    // ✅ Cleanup polling intervals khi đóng trang
+    // âœ… Cleanup polling intervals khi Ä‘Ã³ng trang
     window.addEventListener('beforeunload', () => {
         state.runningTests.forEach(({ pollInterval }) => {
             if (pollInterval) clearInterval(pollInterval);

@@ -18,14 +18,14 @@ const PLATFORMS = {
 // OPTIMIZED CONFIG
 // ============================================================
 const CONFIG = {
-    CONCURRENCY: 10,           // ✅ Tăng từ 3 → 10 workers
-    PAGE_TIMEOUT: 30000,       // ✅ Tăng lên 30s để linh hoạt hơn
-    WAIT_AFTER_LOAD: 2000,     // ✅ Tăng lên 2s để chắc chắn redirect xong
-    RETRY_DELAY: 2000,         // ✅ Tăng delay retry
-    RETRY_COUNT: 2,            // ✅ Retry 2 lần (tổng 3 lần thử)
-    STAGGER_DELAY: 200,        // ✅ Giảm từ 500ms → 200ms
-    DB_BATCH_SIZE: 5,          // ✅ Batch insert DB
-    USE_BROWSER_POOL: true,    // ✅ Reuse browser contexts
+    CONCURRENCY: 3,            // ✅ Giảm xuống 3 để ổn định hơn
+    PAGE_TIMEOUT: 60000,       // ✅ Tăng lên 60s
+    WAIT_AFTER_LOAD: 2000,     
+    RETRY_DELAY: 2000,         
+    RETRY_COUNT: 1,            // ✅ Giảm retry xuống 1 lần
+    STAGGER_DELAY: 200,        
+    DB_BATCH_SIZE: 5,          
+    USE_BROWSER_POOL: true,    
 };
 
 /**
@@ -37,9 +37,11 @@ async function crawlProduct(page, productId, platform, retryCount = CONFIG.RETRY
 
     for (let attempt = 0; attempt <= retryCount; attempt++) {
         try {
-            // ✅ Giảm timeout
+            // ✅ Sử dụng 'domcontentloaded' để nhanh hơn, retry dùng 'commit' để bypass challenge
+            const waitStrategy = attempt === 0 ? 'domcontentloaded' : 'commit';
+            
             const response = await page.goto(redirectUrl, {
-                waitUntil: 'load', // Sử dụng 'load' thay vì 'domcontentloaded' để bắt redirect tốt hơn
+                waitUntil: waitStrategy,
                 timeout: CONFIG.PAGE_TIMEOUT
             });
 
