@@ -38,6 +38,13 @@ MAIL_ENCRYPTION="${MAIL_ENCRYPTION:-null}"
 MAIL_FROM_ADDRESS="${MAIL_FROM_ADDRESS:-hello@example.com}"
 MAIL_FROM_NAME="${MAIL_FROM_NAME:-QA Automation Server}"
 
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-3306}"
+DB_USER="${DB_USER:-root}"
+DB_PASSWORD="${DB_PASSWORD:-root_password}"
+DB_NAME="${DB_NAME:-customily-pod-tester}"
+DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-root_password}"
+
 # Get the current date and time in the format: build-YYYYMMDD-HHMMSS
 BUILD_VERSION="build-$(date +%Y%m%d-%H%M%S)"
 
@@ -55,6 +62,12 @@ ENV_ARGS=(
     --set-env-vars="MAIL_ENCRYPTION=$MAIL_ENCRYPTION"
     --set-env-vars="MAIL_FROM_ADDRESS=$MAIL_FROM_ADDRESS"
     --set-env-vars="MAIL_FROM_NAME=$MAIL_FROM_NAME"
+    --set-env-vars="DB_HOST=$DB_HOST"
+    --set-env-vars="DB_PORT=$DB_PORT"
+    --set-env-vars="DB_USER=$DB_USER"
+    --set-env-vars="DB_PASSWORD=$DB_PASSWORD"
+    --set-env-vars="DB_NAME=$DB_NAME"
+    --set-env-vars="DB_ROOT_PASSWORD=$DB_ROOT_PASSWORD"
 )
 
 if [ "$RUN_MIGRATION" = true ]; then
