@@ -519,6 +519,48 @@ class Repository {
             await connection.query(sql, [values]);
         });
     }
+    /**
+     * ✅ User Management
+     */
+    static async getAllUsers() {
+        return await db.query('SELECT id, email, role, created_at, updated_at FROM users ORDER BY created_at DESC');
+    }
+
+    static async getUserById(id) {
+        const results = await db.query('SELECT id, email, role, created_at, updated_at FROM users WHERE id = ?', [id]);
+        return results[0] || null;
+    }
+
+    static async getUserByEmail(email) {
+        const results = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+        return results[0] || null;
+    }
+
+    static async createUser(data) {
+        const { id, email, password, role } = data;
+        const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        await db.query(
+            'INSERT INTO users (id, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+            [id, email, password, role || 'USER', now, now]
+        );
+        return { id, email, role: role || 'USER' };
+    }
+
+    static async updateUser(id, data) {
+        const fields = [];
+        const params = [];
+        for (const [key, value] of Object.entries(data)) {
+            if (key === 'id' || key === 'email') continue;
+            fields.push(`${key} = ?`);
+            params.push(value);
+        }
+        params.push(id);
+        await db.query(`UPDATE users SET ${fields.join(', ')}, updated_at = NOW() WHERE id = ?`, params);
+    }
+
+    static async deleteUser(id) {
+        await db.query('DELETE FROM users WHERE id = ?', [id]);
+    }
 }
 
 module.exports = Repository;
