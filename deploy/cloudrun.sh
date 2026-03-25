@@ -1,3 +1,13 @@
+# Parse command line arguments
+RUN_MIGRATION=false
+for arg in "$@"; do
+    case $arg in
+        --migrate)
+            RUN_MIGRATION=true
+            ;;
+    esac
+done
+
 IMAGE_NAME="customily-pod-tester"
 PROJECT_ID="printerval"
 
@@ -47,24 +57,28 @@ ENV_ARGS=(
     --set-env-vars="MAIL_FROM_NAME=$MAIL_FROM_NAME"
 )
 
-echo "Configuring migration job..."
-gcloud run jobs update "${SERVICE_NAME}-migration" \
-    --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/backend-asia/$IMAGE_NAME \
-    --region="$SERVICE_REGION" \
-    --command "node" \
-    --args "src/migration-auth.js" \
-    "${ENV_ARGS[@]}" 2>/dev/null || \
-gcloud run jobs create "${SERVICE_NAME}-migration" \
-    --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/backend-asia/$IMAGE_NAME \
-    --region="$SERVICE_REGION" \
-    --command "node" \
-    --args "src/migration-auth.js" \
-    "${ENV_ARGS[@]}"
+if [ "$RUN_MIGRATION" = true ]; then
+    echo "Configuring migration job..."
+    gcloud run jobs update "${SERVICE_NAME}-migration" \
+        --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/backend-asia/$IMAGE_NAME \
+        --region="$SERVICE_REGION" \
+        --command "node" \
+        --args "src/migration-auth.js" \
+        "${ENV_ARGS[@]}" 2>/dev/null || \
+    gcloud run jobs create "${SERVICE_NAME}-migration" \
+        --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/backend-asia/$IMAGE_NAME \
+        --region="$SERVICE_REGION" \
+        --command "node" \
+        --args "src/migration-auth.js" \
+        "${ENV_ARGS[@]}"
 
-echo "Executing migration job..."
-gcloud run jobs execute "${SERVICE_NAME}-migration" \
-    --region="$SERVICE_REGION" \
-    --wait
+    echo "Executing migration job..."
+    gcloud run jobs execute "${SERVICE_NAME}-migration" \
+        --region="$SERVICE_REGION" \
+        --wait
+else
+    echo "Skipping migration job. Use --migrate to run DB migration."
+fi
 
 echo "Deploying Cloud Run service..."
 gcloud run deploy "$SERVICE_NAME" \
