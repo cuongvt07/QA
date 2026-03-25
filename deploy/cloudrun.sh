@@ -15,6 +15,7 @@ SERVICE_NAME="customily-pod-tester"
 SERVICE_REGION="asia-southeast1"
 
 # Environment variables (from Jenkins params or defaults)
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 DAILY_REPORT_TIME="${DAILY_REPORT_TIME:-23:50}"
 DAILY_REPORT_TO="${DAILY_REPORT_TO:-admin@example.com}"
 DAILY_REPORT_CC="${DAILY_REPORT_CC:-dev@example.com}"
@@ -34,6 +35,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --image asia-southeast1-docker.pkg.dev/$PROJECT_ID/backend-asia/$IMAGE_NAME \
     --platform managed \
     --region="$SERVICE_REGION" \
+    --set-env-vars OPENAI_API_KEY="$OPENAI_API_KEY" \
     --set-env-vars DAILY_REPORT_TIME="$DAILY_REPORT_TIME" \
     --set-env-vars DAILY_REPORT_TO="$DAILY_REPORT_TO" \
     --set-env-vars DAILY_REPORT_CC="$DAILY_REPORT_CC" \
