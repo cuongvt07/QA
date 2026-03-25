@@ -42,7 +42,7 @@ DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-3306}"
 DB_USER="${DB_USER:-root}"
 DB_NAME="${DB_NAME:-customily-pod-tester}"
-DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-root_password}"
+DB_PASSWORD="${DB_PASSWORD:-root_password}"
 
 # Get the current date and time in the format: build-YYYYMMDD-HHMMSS
 BUILD_VERSION="build-$(date +%Y%m%d-%H%M%S)"
@@ -64,7 +64,7 @@ ENV_ARGS=(
     --set-env-vars="DB_HOST=$DB_HOST"
     --set-env-vars="DB_PORT=$DB_PORT"
     --set-env-vars="DB_NAME=$DB_NAME"
-    --set-env-vars="DB_ROOT_PASSWORD=$DB_ROOT_PASSWORD"
+    --set-env-vars="DB_PASSWORD=$DB_PASSWORD"
 )
 
 if [ "$RUN_MIGRATION" = true ]; then
