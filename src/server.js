@@ -10,9 +10,12 @@ const PQueue = require('p-queue').default;
 const crawler = require('./crawler');
 const { generateDailyExcel } = require('./utils/excel');
 const { sendDailyReport } = require('./utils/mailer');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 const PORT = process.env.PORT || 8090;
+const JWT_SECRET = process.env.JWT_SECRET || 'qa-engine-default-secret';
 
 const WEB_DIR = path.resolve(__dirname, '../web');
 const REPORTS_DIR = path.join(WEB_DIR, 'reports');
@@ -51,6 +54,68 @@ app.use(express.json({ limit: '10mb' }));
 app.use((req, res, next) => {
     console.log(`[REQUEST] ${req.method} ${req.url}`);
     next();
+});
+
+/**
+ * Authentication Middleware
+ */
+function authenticateToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: 'Access denied. Token missing.' });
+    }
+
+    try {
+        const verified = jwt.verify(token, JWT_SECRET);
+        req.user = verified;
+        next();
+    } catch (err) {
+        res.status(403).json({ error: 'Invalid token' });
+    }
+}
+
+// Public API Routes (Login)
+app.post('/api/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ error: 'Missing email or password' });
+
+        const user = await repo.getUserByEmail(email);
+        if (!user) return res.status(401).json({ error: 'Invalid email or password' });
+
+        const validPass = await bcrypt.compare(password, user.password);
+        if (!validPass) return res.status(401).json({ error: 'Invalid email or password' });
+
+        // Create token
+        const token = jwt.sign(
+            { id: user.id, email: user.email, role: user.role },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        res.json({
+            token,
+            user: { id: user.id, email: user.email, role: user.role }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/logout', (req, res) => {
+    res.json({ message: 'Logged out successfully' });
+});
+
+app.get('/api/me', authenticateToken, async (req, res) => {
+    try {
+        const user = await repo.getUserById(req.user.id);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        res.json({ user });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 app.use(express.static(WEB_DIR));
@@ -352,7 +417,7 @@ async function startEngineRun(payload) {
 }
 
 // API: Upload custom image
-app.post('/api/upload-image', (req, res) => {
+app.post('/api/upload-image', authenticateToken, (req, res) => {
     try {
         const { imageBase64 } = req.body;
         if (!imageBase64) return res.status(400).json({ error: 'No image data' });
@@ -368,7 +433,7 @@ app.post('/api/upload-image', (req, res) => {
 });
 
 // API: Test cases
-app.get('/api/test-cases', async (req, res) => {
+app.get('/api/test-cases', authenticateToken, async (req, res) => {
     try {
         const list = await repo.getAllTestCases();
         res.json(list);
@@ -377,7 +442,7 @@ app.get('/api/test-cases', async (req, res) => {
     }
 });
 
-app.post('/api/test-cases', async (req, res) => {
+app.post('/api/test-cases', authenticateToken, async (req, res) => {
     try {
         const { name, url } = req.body || {};
         if (!validateUrl(url)) return res.status(400).json({ error: 'Invalid URL' });
@@ -405,7 +470,7 @@ app.post('/api/test-cases', async (req, res) => {
     }
 });
 
-app.get('/api/test-cases/:id', async (req, res) => {
+app.get('/api/test-cases/:id', authenticateToken, async (req, res) => {
     try {
         const tc = await repo.getTestCaseById(req.params.id);
         if (!tc) return res.status(404).json({ error: 'Not found' });
@@ -416,7 +481,7 @@ app.get('/api/test-cases/:id', async (req, res) => {
     }
 });
 
-app.post('/api/test-cases/:id/run', async (req, res) => {
+app.post('/api/test-cases/:id/run', authenticateToken, async (req, res) => {
     try {
         const tc = await repo.getTestCaseById(req.params.id);
         if (!tc) return res.status(404).json({ error: 'Not found' });
@@ -442,7 +507,7 @@ app.post('/api/test-cases/:id/run', async (req, res) => {
     }
 });
 
-app.post('/api/batches/daily-new', async (req, res) => {
+app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
     try {
         const limit = resolveDailyNewLimit(req.body || {});
         const headless = req.body?.headless;
@@ -523,7 +588,7 @@ app.post('/api/batches/daily-new', async (req, res) => {
     }
 });
 
-app.delete('/api/test-cases/:id', async (req, res) => {
+app.delete('/api/test-cases/:id', authenticateToken, async (req, res) => {
     try {
         const tc = await repo.getTestCaseById(req.params.id);
         if (!tc) return res.status(404).json({ error: 'Not found' });
@@ -546,7 +611,7 @@ app.delete('/api/test-cases/:id', async (req, res) => {
 });
 
 // API: Runs
-app.get('/api/runs', async (req, res) => {
+app.get('/api/runs', authenticateToken, async (req, res) => {
     try {
         const runs = await repo.getAllRuns(req.query.test_case_id);
         const mapped = runs.map(r => {
@@ -560,7 +625,7 @@ app.get('/api/runs', async (req, res) => {
     }
 });
 
-app.get('/api/runs/:runId', async (req, res) => {
+app.get('/api/runs/:runId', authenticateToken, async (req, res) => {
     try {
         const run = await repo.getRunById(req.params.runId);
         if (!run) return res.status(404).json({ error: 'Not found' });
@@ -577,7 +642,7 @@ app.get('/api/runs/:runId', async (req, res) => {
     }
 });
 
-app.delete('/api/runs/:runId', async (req, res) => {
+app.delete('/api/runs/:runId', authenticateToken, async (req, res) => {
     try {
         if (activeRuns.has(req.params.runId)) return res.status(409).json({ error: 'Active' });
         const run = await repo.getRunById(req.params.runId);
@@ -594,7 +659,7 @@ app.delete('/api/runs/:runId', async (req, res) => {
 });
 
 // API: Reports
-app.get('/api/reports', async (req, res) => {
+app.get('/api/reports', authenticateToken, async (req, res) => {
     try {
         const reports = await repo.getAllReports();
         res.json(reports);
@@ -604,7 +669,7 @@ app.get('/api/reports', async (req, res) => {
 });
 
 // --- Product Crawler API ---
-app.get('/api/products', async (req, res) => {
+app.get('/api/products', authenticateToken, async (req, res) => {
     try {
         const list = await repo.getAllProducts();
         res.json(list);
@@ -613,7 +678,7 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
-app.post('/api/products/crawl', async (req, res) => {
+app.post('/api/products/crawl', authenticateToken, async (req, res) => {
     try {
         const { ids, platform } = req.body;
         if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -662,7 +727,7 @@ app.post('/api/products/crawl', async (req, res) => {
     }
 });
 
-app.post('/api/products/convert-to-test-cases', async (req, res) => {
+app.post('/api/products/convert-to-test-cases', authenticateToken, async (req, res) => {
     try {
         const { keys } = req.body; // Array of "product_id|platform" strings
         if (!keys || !Array.isArray(keys) || keys.length === 0) {
@@ -712,7 +777,7 @@ app.post('/api/products/convert-to-test-cases', async (req, res) => {
     }
 });
 
-app.post('/api/products/batch-delete', async (req, res) => {
+app.post('/api/products/batch-delete', authenticateToken, async (req, res) => {
     try {
         const { ids } = req.body;
         if (!ids || !Array.isArray(ids)) return res.status(400).json({ error: 'Invalid IDs' });
@@ -733,7 +798,7 @@ app.post('/api/products/batch-delete', async (req, res) => {
 // API: Settings Management (.env persistence)
 const SETTINGS_FILE = path.resolve(__dirname, '../.env');
 
-app.get('/api/settings', (req, res) => {
+app.get('/api/settings', authenticateToken, (req, res) => {
     try {
         if (!fs.existsSync(SETTINGS_FILE)) return res.json({});
         const content = fs.readFileSync(SETTINGS_FILE, 'utf8');
@@ -753,7 +818,7 @@ app.get('/api/settings', (req, res) => {
     }
 });
 
-app.post('/api/settings', (req, res) => {
+app.post('/api/settings', authenticateToken, (req, res) => {
     try {
         console.log('[SETTINGS] POST request body:', req.body);
         const newSettings = req.body;
@@ -795,7 +860,7 @@ app.post('/api/settings', (req, res) => {
     }
 });
 
-app.post('/api/run', async (req, res) => {
+app.post('/api/run', authenticateToken, async (req, res) => {
     try {
         const started = await startEngineRun({
             url: req.body?.url,
@@ -865,7 +930,7 @@ app.all(['/api/reset-all', '/api/reports-all'], async (req, res) => {
  * Spec §8: Check if the next run for a given test_input_signature should be
  * forced into REVIEW based on historical disagreement rate.
  */
-app.get('/api/force-review-check', async (req, res) => {
+app.get('/api/force-review-check', authenticateToken, async (req, res) => {
     const { signature } = req.query;
     if (!signature) return res.status(400).json({ error: 'signature is required' });
 
@@ -885,7 +950,7 @@ app.get('/api/force-review-check', async (req, res) => {
  * Returns aggregate KPI metrics across recent runs (Spec §9).
  * Light summary: auto_decision_stability, review_rate, unavailable_signal_rate.
  */
-app.get('/api/reliability-kpi', async (req, res) => {
+app.get('/api/reliability-kpi', authenticateToken, async (req, res) => {
     try {
         const allReports = await repo.getAllReports();
         const total = allReports.length;
@@ -908,7 +973,7 @@ app.get('/api/reliability-kpi', async (req, res) => {
 
 ensureDir(REPORTS_DIR);
 // Maintenance: Cleanup old data
-app.delete('/api/maintenance/cleanup', async (req, res) => {
+app.delete('/api/maintenance/cleanup', authenticateToken, async (req, res) => {
     const days = parseInt(req.query.days) || 30;
     try {
         const result = await repo.deleteOldRuns(days);
