@@ -59,23 +59,13 @@ app.use((req, res, next) => {
 /**
  * Authentication Middleware
  */
+/**
+ * Authentication Middleware - DISABLED by user request
+ * All requests are automatically authorized as ADMIN
+ */
 function authenticateToken(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (token) {
-        try {
-            req.user = jwt.verify(token, JWT_SECRET);
-        } catch (err) {
-            // Ignore invalid token
-        }
-    }
-
-    // Bypass check: If no valid token, mock an admin user so API keeps working
-    if (!req.user) {
-        req.user = { id: 'USER_MOCK', email: 'admin@megaads.com', role: 'ADMIN' };
-    }
-    
+    // Force mock admin user for all requests
+    req.user = { id: 'USER_MOCK', email: 'admin@megaads.com', role: 'ADMIN' };
     next();
 }
 
