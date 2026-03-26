@@ -111,6 +111,61 @@ app.get('/api/me', authenticateToken, async (req, res) => {
     }
 });
 
+// --- User Management API ---
+
+app.get('/api/users', authenticateToken, async (req, res) => {
+    try {
+        const users = await repo.getAllUsers();
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/users', authenticateToken, async (req, res) => {
+    try {
+        const { email, password, role } = req.body;
+        if (!email || !password) return res.status(400).json({ error: 'Missing email or password' });
+
+        const existing = await repo.getUserByEmail(email);
+        if (existing) return res.status(400).json({ error: 'User already exists' });
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const user = await repo.createUser({
+            id: `USER_${Date.now()}`,
+            email,
+            password: hashedPassword,
+            role: role || 'USER'
+        });
+
+        res.status(201).json(user);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/users/:id', authenticateToken, async (req, res) => {
+    try {
+        const data = { ...req.body };
+        if (data.password) {
+            data.password = await bcrypt.hash(data.password, 10);
+        }
+        await repo.updateUser(req.params.id, data);
+        res.json({ message: 'User updated successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/users/:id', authenticateToken, async (req, res) => {
+    try {
+        await repo.deleteUser(req.params.id);
+        res.json({ message: 'User deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.use(express.static(WEB_DIR));
 
 // API: Database connectivity check
