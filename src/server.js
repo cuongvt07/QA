@@ -120,6 +120,17 @@ app.get('/api/me', authenticateToken, async (req, res) => {
 
 app.use(express.static(WEB_DIR));
 
+// API: Database connectivity check
+app.get('/api/health/db', async (req, res) => {
+    try {
+        const db = require('./db');
+        await db.query('SELECT 1');
+        res.json({ status: 'successful' });
+    } catch (error) {
+        res.status(500).json({ status: 'fail', message: error.message });
+    }
+});
+
 function ensureDir(dirPath) {
     if (!fs.existsSync(dirPath)) {
         fs.mkdirSync(dirPath, { recursive: true });
