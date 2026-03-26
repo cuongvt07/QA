@@ -407,7 +407,7 @@
         }
 
         try {
-            const res = await fetch('/api/test-cases', {
+            const res = await Auth.fetch('/api/test-cases', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url }),
@@ -450,7 +450,7 @@
             for (const candidate of endpointCandidates) {
                 const url = `${baseUrl}${candidate.path}`;
                 try {
-                    const res = await fetch(url, { method: candidate.method });
+                    const res = await Auth.fetch(url, { method: candidate.method });
                     if (res.ok) {
                         return;
                     }
@@ -943,7 +943,7 @@
                 if (!confirmed) return;
 
                 try {
-                    const res = await fetch(`/api/test-cases/${tcId}`, { method: 'DELETE' });
+                    const res = await Auth.fetch(`/api/test-cases/${tcId}`, { method: 'DELETE' });
                     if (!res.ok) {
                         const err = await res.json().catch(() => ({}));
                         throw new Error(err.error || 'Delete test case failed');
@@ -1752,7 +1752,7 @@
 
         // Try to fetch from server as primary source
         try {
-            const res = await fetch('/api/settings');
+            const res = await Auth.fetch('/api/settings');
             if (res.ok) {
                 const s = await res.json();
                 if (s.timeout) $('#setting-timeout').value = s.timeout;
@@ -1856,7 +1856,7 @@
                     reader.readAsDataURL(file);
                 });
 
-                const res = await fetch('/api/upload-image', {
+                const res = await Auth.fetch('/api/upload-image', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ imageBase64: base64Data, filename: file.name })
@@ -1884,7 +1884,7 @@
         btn.innerHTML = '<span class="loading-spinner"></span> Syncing...';
         btn.disabled = true;
         try {
-            const res = await fetch('/api/settings', {
+            const res = await Auth.fetch('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settingsToSave)
@@ -1927,7 +1927,7 @@
             btnRunDailyNew.innerHTML = '<span class="loading-spinner"></span> Queueing...';
 
             try {
-                const res = await fetch('/api/batches/daily-new', {
+                const res = await Auth.fetch('/api/batches/daily-new', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -2000,7 +2000,7 @@
                 ? { headless: isHeadless !== false, useAi, customImageFilename: currentSettings.customImageFilename, tcCode: effectiveTcCode, concurrency: effectiveConcurrency }
                 : { headless: isHeadless !== false, useAi, customImageFilename: currentSettings.customImageFilename, url: testCase.url, tcCode: effectiveTcCode, concurrency: effectiveConcurrency };
 
-            const res = await fetch(endpoint, {
+            const res = await Auth.fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody),
@@ -2446,7 +2446,7 @@
         }
 
         try {
-            const res = await fetch(`/api/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
+            const res = await Auth.fetch(`/api/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
                 throw new Error(err.error || 'Delete run failed');
@@ -2824,7 +2824,7 @@
     // ============================================================
     async function fetchTestCases() {
         try {
-            const res = await fetch('/api/test-cases');
+            const res = await Auth.fetch('/api/test-cases');
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
             const apiTestCases = await res.json();
@@ -2867,7 +2867,7 @@
             try {
                 // Small delay to prevent network congestion
                 await new Promise(r => setTimeout(r, 80));
-                await fetch(`/api/test-cases/${id}/run`, {
+                await Auth.fetch(`/api/test-cases/${id}/run`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -2953,7 +2953,7 @@
 
     async function fetchRuns() {
         try {
-            const res = await fetch('/api/runs');
+            const res = await Auth.fetch('/api/runs');
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
             const apiRuns = await res.json();
@@ -2979,7 +2979,7 @@
 
     async function fetchReports() {
         try {
-            const res = await fetch('/api/reports');
+            const res = await Auth.fetch('/api/reports');
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
             const apiReports = await res.json();
@@ -3028,7 +3028,7 @@
         if (!runId) return null;
 
         try {
-            const res = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+            const res = await Auth.fetch(`/api/runs/${encodeURIComponent(runId)}`);
             if (!res.ok) return null;
 
             const payload = await res.json();
@@ -3124,7 +3124,7 @@
 
     async function fetchProducts(render = true) {
         try {
-            const res = await fetch('/api/products');
+            const res = await Auth.fetch('/api/products');
             if (!res.ok) throw new Error('Failed to fetch products');
             state.products = await res.json();
             if (render) renderProducts();
@@ -3219,7 +3219,7 @@
             crawlerProgressCount.textContent = `0/${ids.length}`;
 
             try {
-                const res = await fetch('/api/products/crawl', {
+                const res = await Auth.fetch('/api/products/crawl', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ids, platform })
@@ -3266,7 +3266,7 @@
                 const pid = e.target.dataset.pid;
 
                 try {
-                    const res = await fetch('/api/products/convert-to-test-cases', {
+                    const res = await Auth.fetch('/api/products/convert-to-test-cases', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ keys: [key] })
@@ -3294,7 +3294,7 @@
                     confirm: true
                 })) {
                     try {
-                        const res = await fetch('/api/products/batch-delete', {
+                        const res = await Auth.fetch('/api/products/batch-delete', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ ids: [`${pid}|${platform}`] })
@@ -3318,7 +3318,7 @@
                 confirm: true
             })) {
                 try {
-                    const res = await fetch('/api/products/convert-to-test-cases', {
+                    const res = await Auth.fetch('/api/products/convert-to-test-cases', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ keys: Array.from(state.selectedProducts) })
@@ -3349,7 +3349,7 @@
                 confirm: true
             })) {
                 try {
-                    const res = await fetch('/api/products/batch-delete', {
+                    const res = await Auth.fetch('/api/products/batch-delete', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ ids: Array.from(state.selectedProducts) })

@@ -42,6 +42,8 @@ services:
         volumes:
             - reports_data:/app/web/reports
             - ./.env:/app/.env
+            - ./web:/app/web
+            - ./src:/app/src
 
 volumes:
     db_data:
