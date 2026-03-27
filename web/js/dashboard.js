@@ -1,4 +1,4 @@
-﻿/**
+/**
  * QA Dashboard - JavaScript Controller
  * Handles navigation, data management, rendering, and modal interactions.
  */
@@ -470,6 +470,8 @@
     const btnTcBulkAdd = $('#btn-tc-bulk-add');
     if (btnTcBulkAdd) {
         btnTcBulkAdd.addEventListener('click', async () => {
+            console.log('[DEBUG] btn-tc-bulk-add clicked');
+            
             const ta = $('#tc-bulk-urls');
             const text = ta.value.trim();
             if (!text) {
@@ -485,6 +487,7 @@
                 btnTcBulkAdd.innerHTML = 'Creating...';
                 btnTcBulkAdd.disabled = true;
 
+                console.log('[DEBUG] Sending batch request with', urls.length, 'urls');
                 const res = await Auth.fetch('/api/test-cases/batch', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
