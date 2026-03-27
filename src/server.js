@@ -1093,7 +1093,13 @@ app.get('/api/events', (req, res) => {
     clients.add(res);
     console.log(`[SERVER] SSE Client connected. Total: ${clients.size}`);
 
+    // Heartbeat every 30s to prevent Cloudflare / proxy timeout (default 100s)
+    const heartbeat = setInterval(() => {
+        res.write(': ping\n\n');
+    }, 30000);
+
     req.on('close', () => {
+        clearInterval(heartbeat);
         clients.delete(res);
         console.log(`[SERVER] SSE Client disconnected. Total: ${clients.size}`);
     });
