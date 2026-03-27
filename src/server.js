@@ -189,7 +189,7 @@ app.get('/api/health/db', async (req, res) => {
 });
 
 // SPA Fallback for HTML5 History API (pushState)
-app.get('*', (req, res) => {
+app.get(/.*/, (req, res) => {
     if (req.path.startsWith('/api/')) {
         return res.status(404).json({ error: 'Endpoint not found' });
     }
@@ -700,6 +700,44 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
             queued,
             skipped
         });
+
+        // Background workflow: Wait for queue to finish, then send email report
+        if (queued.length > 0) {
+            (async () => {
+                try {
+                    console.log(`[DAILY-BATCH] Waiting for ${queued.length} queued tests to finish before sending email...`);
+                    await queue.onIdle();
+                    console.log(`[DAILY-BATCH] Queue is idle. Generating end-of-batch Excel report...`);
+
+                    const allRuns = await repo.getAllRuns();
+                    const dateStr = new Date().toISOString().split('T')[0];
+                    const todaysRuns = allRuns.filter(r => {
+                        if (!r.created_at && !r.test_time && !r.started_at) return false;
+                        const d = new Date(r.created_at || r.test_time || r.started_at);
+                        if (isNaN(d.getTime())) return false;
+                        return d.toISOString().split('T')[0] === dateStr;
+                    });
+
+                    let passCount = 0, failCount = 0;
+                    todaysRuns.forEach(r => {
+                        const s = String(r.status).toUpperCase();
+                        if (s === 'PASS') passCount++;
+                        else if (['FAIL', 'FATAL'].includes(s)) failCount++;
+                    });
+
+                    const tmpDir = path.join(__dirname, '../tmp');
+                    const excelPath = await generateDailyExcel(todaysRuns, tmpDir);
+                    
+                    const sent = await sendDailyReport(excelPath, passCount, failCount, todaysRuns.length);
+                    if (excelPath && fs.existsSync(excelPath)) {
+                        fs.unlinkSync(excelPath);
+                    }
+                    console.log(`[DAILY-BATCH] End-of-batch email sent: ${sent}`);
+                } catch (err) {
+                    console.error('[DAILY-BATCH] Error sending end-of-batch report:', err.message);
+                }
+            })();
+        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -776,6 +814,50 @@ app.delete('/api/runs/:runId', authenticateToken, async (req, res) => {
 });
 
 // API: Reports
+app.post('/api/reports/daily-mail', authenticateToken, async (req, res) => {
+    try {
+        console.log('[API-CRON] Executing forced daily email report...');
+        const allRuns = await repo.getAllRuns();
+        const dateStr = new Date().toISOString().split('T')[0];
+        
+        const todaysRuns = allRuns.filter(r => {
+            if (!r.created_at && !r.test_time && !r.started_at) return false;
+            const d = new Date(r.created_at || r.test_time || r.started_at);
+            if (isNaN(d.getTime())) return false;
+            return d.toISOString().split('T')[0] === dateStr;
+        });
+
+        if (todaysRuns.length === 0) {
+            return res.json({ message: 'No runs today. Skipped email.' });
+        }
+
+        let passCount = 0, failCount = 0;
+        todaysRuns.forEach(r => {
+            const s = String(r.status).toUpperCase();
+            if (s === 'PASS') passCount++;
+            else if (['FAIL', 'FATAL'].includes(s)) failCount++;
+        });
+
+        const tmpDir = path.join(__dirname, '../tmp');
+        const excelPath = await generateDailyExcel(todaysRuns, tmpDir);
+        
+        const sent = await sendDailyReport(excelPath, passCount, failCount, todaysRuns.length);
+        if (excelPath && fs.existsSync(excelPath)) {
+            fs.unlinkSync(excelPath);
+        }
+
+        res.json({ 
+            message: sent ? 'Daily email sent successfully' : 'Failed or skipped sending email (Check SMTP config)', 
+            total_runs: todaysRuns.length, 
+            passes: passCount, 
+            fails: failCount 
+        });
+    } catch (error) {
+        console.error('[API-CRON] Error sending mail:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.get('/api/reports', authenticateToken, async (req, res) => {
     try {
         const reports = await repo.getAllReports();
@@ -1173,6 +1255,7 @@ function scheduleDailyReport() {
 }
 scheduleDailyReport();
 
+// (Node-cron execution has been replaced with the OS-level trigger + /api/batches/daily-new queue onIdle implementation)
 app.listen(PORT, () => {
     console.log(`\nQA Server (MySQL) running on http://localhost:${PORT}\n`);
 });
