@@ -188,14 +188,7 @@ app.get('/api/health/db', async (req, res) => {
     }
 });
 
-// SPA Fallback for HTML5 History API (pushState)
-app.get(/.*/, (req, res) => {
-    if (req.path.startsWith('/api/')) {
-        return res.status(404).json({ error: 'Endpoint not found' });
-    }
-    // Only serve index.html if the request is not for a file
-    res.sendFile(path.join(WEB_DIR, 'index.html'));
-});
+
 
 function ensureDir(dirPath) {
     if (!fs.existsSync(dirPath)) {
@@ -1256,6 +1249,16 @@ function scheduleDailyReport() {
 scheduleDailyReport();
 
 // (Node-cron execution has been replaced with the OS-level trigger + /api/batches/daily-new queue onIdle implementation)
+
+// SPA Fallback for HTML5 History API (pushState)
+app.get(/.*/, (req, res) => {
+    if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'Endpoint not found' });
+    }
+    // Only serve index.html if the request is not for a file
+    res.sendFile(path.join(WEB_DIR, 'index.html'));
+});
+
 app.listen(PORT, () => {
     console.log(`\nQA Server (MySQL) running on http://localhost:${PORT}\n`);
 });
