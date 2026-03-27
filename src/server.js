@@ -1251,7 +1251,8 @@ scheduleDailyReport();
 // (Node-cron execution has been replaced with the OS-level trigger + /api/batches/daily-new queue onIdle implementation)
 
 // SPA Fallback for HTML5 History API (pushState)
-app.get(/.*/, (req, res) => {
+app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
     if (req.path.startsWith('/api/')) {
         return res.status(404).json({ error: 'Endpoint not found' });
     }
