@@ -1,4 +1,4 @@
-/**
+﻿/**
  * QA Dashboard - JavaScript Controller
  * Handles navigation, data management, rendering, and modal interactions.
  */
@@ -1336,7 +1336,7 @@
                             ${step.cart_evidence.panel ? `
                             <div class="step-img-container" style="max-width:320px; flex:0 0 auto;">
                                 <img src="${escapeHtml(step.cart_evidence.panel)}" alt="Cart Panel">
-                                <div class="step-img-label">GIá»Ž HÃ€NG (PANEL)</div>
+                                <div class="step-img-label">CART (PANEL)</div>
                             </div>` : ''}
                             <div class="step-img-container" style="max-width:320px; flex:0 0 auto;">
                                 <img src="${escapeHtml(step.cart_evidence.viewport)}" alt="Viewport Context">
@@ -1394,7 +1394,7 @@
                         
                         <div class="step-selection-row">
                             ${thumbHtml}
-                            <span class="step-val-label">Lá»±a chá»n: <span class="step-val-badge">${escapeHtml(step.value_chosen || '')}</span></span>
+                            <span class="step-val-label">Selected: <span class="step-val-badge">${escapeHtml(step.value_chosen || '')}</span></span>
                             ${colorMetaHtml}
                             
                             ${isV2 ? (
@@ -1406,7 +1406,7 @@
                 ) : (
                     // Legacy fallback
                     `${step.code_evaluation && step.code_evaluation.diff_score >= 0
-                        ? `<span class="step-diff" title="Pixelmatch">Audit Code: ${step.code_evaluation.diff_score}%</span>`
+                        ? `<span class="step-diff" title="PixelAudit Code Code: ${step.code_evaluation.diff_score}%</span>`
                         : (step.diff_score >= 0 ? `<span class="step-diff">Äá»™ lá»‡ch: ${step.diff_score}%</span>` : '')}`
                 )}
                         </div>
@@ -1415,7 +1415,7 @@
                     ? `<div class="step-images">
                                 <div class="step-img-container">
                                     ${step.state_before ? `<img src="${escapeHtml(step.state_before)}" alt="Before">` : '<div style="height:80px;display:flex;align-items:center;justify-content:center;color:var(--text-muted)">N/A</div>'}
-                                    <div class="step-img-label">TRÆ¯á»šC KHI</div>
+                                    <div class="step-img-label">BEFORE</div>
                                 </div>
                                 <div class="step-arrow-section">
                                     ${step.option_thumbnail
@@ -1456,13 +1456,13 @@
                         
                         <div class="step-meta-grid" style="margin-top:15px; display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
                             <div class="meta-item" style="padding:8px 12px; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.03);">
-                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">AI Kiá»ƒm Äá»‹nh</span>
+                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">AI Verdict</span>
                                 <span class="meta-value" style="font-size:0.85rem; font-weight:600; color:${step.ai_evaluation?.ai_verdict === 'PASS' ? 'var(--accent-success)' : 'var(--text-muted)'}">
                                     ${step.ai_evaluation?.ai_verdict || 'N/A'}
                                 </span>
                             </div>
                             <div class="meta-item" style="padding:8px 12px; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.03);">
-                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">MÃ£ Audit</span>
+                                <span class="Audit Code</span>
                                 <span class="meta-value" style="font-size:0.85rem; font-weight:600;">${step.code_evaluation?.status || 'N/A'}</span>
                             </div>
                         </div>
@@ -3528,3 +3528,4 @@
         switchPage('dashboard');
     }
 })();
+
