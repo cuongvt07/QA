@@ -192,7 +192,10 @@
             }
         });
         
-        // Removed auto-redirect to avoid potential loop with server-side cookie auth
+        // Auto-redirect to dashboard since auth is disabled
+        if (Auth.isAuthenticated()) {
+            window.location.href = '/index.html';
+        }
     </script>
 </body>
 </html>

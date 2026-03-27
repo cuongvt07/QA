@@ -378,9 +378,11 @@
     // ============================================================
     $('#btn-new-test').addEventListener('click', () => {
         modalNewTest.style.display = 'flex';
-        $('#input-test-name').value = '';
-        $('#input-product-url').value = '';
-        $('#input-test-name').focus();
+        const inputProductUrl = $('#input-product-url');
+        if (inputProductUrl) {
+            inputProductUrl.value = '';
+            inputProductUrl.focus();
+        }
     });
 
     $('#btn-close-modal').addEventListener('click', closeNewTestModal);
