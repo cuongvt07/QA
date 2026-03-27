@@ -17,8 +17,9 @@ const PLATFORMS = {
 // ============================================================
 // OPTIMIZED CONFIG
 // ============================================================
+const envConcurrency = Number.parseInt(process.env.SERVER_QUEUE_CONCURRENCY || 3, 10);
 const CONFIG = {
-    CONCURRENCY: 3,            // ✅ Giảm xuống 3 để ổn định hơn
+    CONCURRENCY: envConcurrency, // Sync with .env limits
     PAGE_TIMEOUT: 60000,       // ✅ Tăng lên 60s
     WAIT_AFTER_LOAD: 2000,     
     RETRY_DELAY: 2000,         

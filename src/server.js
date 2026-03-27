@@ -188,6 +188,15 @@ app.get('/api/health/db', async (req, res) => {
     }
 });
 
+// SPA Fallback for HTML5 History API (pushState)
+app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'Endpoint not found' });
+    }
+    // Only serve index.html if the request is not for a file
+    res.sendFile(path.join(WEB_DIR, 'index.html'));
+});
+
 function ensureDir(dirPath) {
     if (!fs.existsSync(dirPath)) {
         fs.mkdirSync(dirPath, { recursive: true });
@@ -533,6 +542,46 @@ app.post('/api/test-cases', authenticateToken, async (req, res) => {
 
         await repo.createTestCase(testCase);
         res.status(201).json(testCase);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/test-cases/batch', authenticateToken, async (req, res) => {
+    try {
+        const { urls } = req.body || {};
+        if (!urls || !Array.isArray(urls) || urls.length === 0) {
+            return res.status(400).json({ error: 'Missing or invalid urls array' });
+        }
+
+        const existing = await repo.getAllTestCases();
+        const createdTestCases = [];
+
+        for (let url of urls) {
+            url = String(url).trim();
+            if (!url || !validateUrl(url)) continue;
+
+            const normalizedName = getNextAutoTestName(existing);
+
+            const testCase = {
+                id: makeId('TC'),
+                name: normalizedName,
+                url,
+                status: 'PENDING',
+                created_at: formatMySqlDate(new Date()),
+                updated_at: formatMySqlDate(new Date())
+            };
+
+            await repo.createTestCase(testCase);
+            createdTestCases.push(testCase);
+            existing.push(testCase);
+        }
+
+        res.status(201).json({ 
+            message: `Successfully created ${createdTestCases.length} test cases`, 
+            count: createdTestCases.length,
+            created: createdTestCases 
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

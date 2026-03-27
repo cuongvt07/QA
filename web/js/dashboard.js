@@ -331,8 +331,22 @@
         item.addEventListener('click', (e) => {
             e.preventDefault();
             const pageName = item.dataset.page;
+            if (window.location.pathname !== `/${pageName}`) {
+                history.pushState(null, '', `/${pageName}`);
+            }
             switchPage(pageName);
         });
+    });
+
+    window.addEventListener('popstate', () => {
+        let path = window.location.pathname.replace(/^\/+/, '');
+        if (path === '' || path === 'index.html') path = 'dashboard';
+        
+        if ($(`[data-page="${path}"]`)) {
+            switchPage(path);
+        } else {
+            switchPage('dashboard');
+        }
     });
 
     function switchPage(pageName) {
@@ -397,40 +411,112 @@
     }
 
     $('#btn-submit-test').addEventListener('click', async () => {
-        const url = $('#input-product-url').value.trim();
+        const text = $('#input-product-url').value.trim();
 
-        if (!url) {
+        if (!text) {
             await showPopup({
                 title: 'Invalid Input',
-                message: 'Please enter a Product URL.',
+                message: 'Please enter at least one Product URL.',
                 okText: 'Understood'
             });
             return;
         }
 
+        const urls = text.split('\n').map(u => u.trim()).filter(Boolean);
+        if (urls.length === 0) return;
+
+        const btn = $('#btn-submit-test');
+        const originalText = btn.innerHTML;
+
         try {
-            const res = await Auth.fetch('/api/test-cases', {
+            btn.innerHTML = 'Creating...';
+            btn.disabled = true;
+
+            const res = await Auth.fetch('/api/test-cases/batch', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url }),
+                body: JSON.stringify({ urls }),
             });
 
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || 'Failed to create test case');
+                throw new Error(err.error || 'Failed to create test cases');
             }
 
+            const data = await res.json();
+            
             await syncAllFromApi({ render: true });
             closeNewTestModal();
             switchPage('test-cases');
+            
+            await showPopup({
+                title: 'Success',
+                message: data.message || `Created ${data.count} test cases.`,
+                okText: 'OK'
+            });
         } catch (error) {
             await showPopup({
                 title: 'Creation Failed',
                 message: 'Create test case failed: ' + error.message,
                 okText: 'Dismiss'
             });
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
         }
     });
+
+    // Bulk Add Test Cases from the new panel
+    const btnTcBulkAdd = $('#btn-tc-bulk-add');
+    if (btnTcBulkAdd) {
+        btnTcBulkAdd.addEventListener('click', async () => {
+            const ta = $('#tc-bulk-urls');
+            const text = ta.value.trim();
+            if (!text) {
+                await showPopup({ title: 'Invalid Input', message: 'Please enter at least one Product URL.', okText: 'Understood' });
+                return;
+            }
+
+            const urls = text.split('\n').map(u => u.trim()).filter(Boolean);
+            if (urls.length === 0) return;
+
+            const originalText = btnTcBulkAdd.innerHTML;
+            try {
+                btnTcBulkAdd.innerHTML = 'Creating...';
+                btnTcBulkAdd.disabled = true;
+
+                const res = await Auth.fetch('/api/test-cases/batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ urls }),
+                });
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.error || 'Failed to create test cases');
+                }
+
+                const data = await res.json();
+                ta.value = ''; // clear input
+                await syncAllFromApi({ render: true });
+                
+                await showPopup({
+                    title: 'Success',
+                    message: data.message || `Created ${data.count} test cases.`,
+                    okText: 'OK'
+                });
+            } catch (error) {
+                await showPopup({
+                    title: 'Creation Failed',
+                    message: 'Bulk add failed: ' + error.message,
+                    okText: 'Dismiss'
+                });
+            } finally {
+                btnTcBulkAdd.innerHTML = originalText;
+                btnTcBulkAdd.disabled = false;
+            }
+        });
+    }
 
     // ============================================================
     // RESET ALL DATA
@@ -3431,4 +3517,14 @@
     syncAllFromApi({ render: true });
     fetchProducts(false); // Background initial load
     initSSE();
+
+    // Trigger pushState routing on load
+    let path = window.location.pathname.replace(/^\/+/, '');
+    if (path === '' || path === 'index.html') path = 'dashboard';
+
+    if ($(`[data-page="${path}"]`)) {
+        switchPage(path);
+    } else {
+        switchPage('dashboard');
+    }
 })();
