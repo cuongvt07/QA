@@ -833,11 +833,43 @@
         `;
     }
 
+    function updateDashboardStats() {
+        const runs = state.testRuns || [];
+        const totalHtml = runs.length;
+        let passCount = 0;
+        let failCount = 0;
+        let reviewCount = 0;
+        let scoreSum = 0;
+        let validScores = 0;
+        
+        runs.forEach(r => {
+            const status = normalizeRunStatus(r.status);
+            if (status === 'PASS' || status === 'PASS_AUTO') passCount++;
+            else if (status === 'FAIL' || status === 'FATAL') failCount++;
+            else if (status === 'REVIEW') reviewCount++;
+            
+            if (typeof r.score === 'number' && !isNaN(r.score)) {
+                scoreSum += r.score;
+                validScores++;
+            }
+        });
+        
+        const avgScore = validScores > 0 ? Math.round(scoreSum / validScores) : '—';
+        
+        if (document.querySelector('#stat-total .stat-value')) document.querySelector('#stat-total .stat-value').innerText = totalHtml;
+        if (document.querySelector('#stat-passed .stat-value')) document.querySelector('#stat-passed .stat-value').innerText = passCount;
+        if (document.querySelector('#stat-failed .stat-value')) document.querySelector('#stat-failed .stat-value').innerText = failCount;
+        if (document.querySelector('#stat-review .stat-value')) document.querySelector('#stat-review .stat-value').innerText = reviewCount;
+        if (document.querySelector('#stat-avgScore .stat-value')) document.querySelector('#stat-avgScore .stat-value').innerText = avgScore;
+    }
+
     function renderDashboard() {
         if (state.currentPage !== 'dashboard') return;
 
         const listEl = $('#recent-runs-list');
         if (!listEl) return;
+
+        updateDashboardStats();
 
         // Filter and sort runs
         const sortedLatestRuns = [...state.testRuns].sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a));
@@ -1318,7 +1350,7 @@
                     <div class="step-content">
                         <div class="step-header">
                             <div class="step-title-area">
-                                <span class="step-label">HÃ€NH Äá»˜NG ${step.step_id}</span>
+                                <span class="step-label">ACTION ${step.step_id}</span>
                                 <h4 class="step-action-title">${escapeHtml(label)}</h4>
                             </div>
                             <span class="badge badge-${stepClass}">${uiStatus}</span>
@@ -1343,14 +1375,14 @@
                             </div>` : ''}
                             <div class="step-img-container" style="max-width:320px; flex:0 0 auto;">
                                 <img src="${escapeHtml(step.cart_evidence.viewport)}" alt="Viewport Context">
-                                <div class="step-img-label">Bá»I Cáº¢NH (VIEWPORT)</div>
+                                <div class="step-img-label">CONTEXT (VIEWPORT)</div>
                             </div>
                         </div>`
                         : (step.state_after
                             ? `<div class="step-images" style="margin-top:10px;">
                                 <div class="step-img-container" style="max-width:400px;">
                                     <img src="${escapeHtml(step.state_after)}" alt="Evidence">
-                                    <div class="step-img-label">Káº¾T QUáº¢</div>
+                                    <div class="step-img-label">RESULT</div>
                                 </div>
                             </div>`
                             : '')}
@@ -1385,7 +1417,7 @@
                     <div class="step-content">
                         <div class="step-header">
                             <div class="step-title-area">
-                                <span class="step-label">HÃ€NH Äá»˜NG ${step.step_id}</span>
+                                <span class="step-label">ACTION ${step.step_id}</span>
                                 <h4 class="step-action-title">${escapeHtml(step.action)}: <span class="step-name">${escapeHtml(step.name)}</span></h4>
                             </div>
                             <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
@@ -1410,7 +1442,7 @@
                     // Legacy fallback
                     `${step.code_evaluation && step.code_evaluation.diff_score >= 0
                         ? `<span class="step-diff" title="PixelAudit Code Code: ${step.code_evaluation.diff_score}%</span>`
-                        : (step.diff_score >= 0 ? `<span class="step-diff">Äá»™ lá»‡ch: ${step.diff_score}%</span>` : '')}`
+                        : (step.diff_score >= 0 ? `<span class="step-diff">Visual Diff: ${step.diff_score}%</span>` : '')}`
                 )}
                         </div>
 
@@ -1429,11 +1461,11 @@
                             ? `<div class="step-option-preview">
                                                 <div style="width:40px;height:40px;border-radius:50%;border:2px solid var(--accent-primary);background:${safeColorHex};margin:0 auto;"></div>
                                             </div>`
-                            : '<div class="step-arrow">â†’</div>')}
+                            : '<div class="step-arrow">&rarr;</div>')}
                                 </div>
                                 <div class="step-img-container">
                                     ${step.state_after ? `<img src="${escapeHtml(step.state_after)}" alt="After">` : '<div style="height:80px;display:flex;align-items:center;justify-content:center;color:var(--text-muted)">N/A</div>'}
-                                    <div class="step-img-label">SAU KHI</div>
+                                    <div class="step-img-label">AFTER</div>
                                 </div>
                             </div>`
                     : ''}
@@ -1465,7 +1497,7 @@
                                 </span>
                             </div>
                             <div class="meta-item" style="padding:8px 12px; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.03);">
-                                <span class="Audit Code</span>
+                                <span class="meta-label" style="font-size:0.7rem; color:var(--text-muted); display:block; margin-bottom:2px; text-transform:uppercase;">Audit Code</span>
                                 <span class="meta-value" style="font-size:0.85rem; font-weight:600;">${step.code_evaluation?.status || 'N/A'}</span>
                             </div>
                         </div>
