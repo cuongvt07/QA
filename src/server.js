@@ -292,10 +292,10 @@ function resolveDailyNewLimit(payload = {}) {
     const rawValue = payload.limit
         ?? process.env.DAILY_NEW_TC_LIMIT
         ?? process.env.DAILY_BATCH_LIMIT
-        ?? 20;
+        ?? 200;
 
     const parsed = Number.parseInt(rawValue, 10);
-    if (!Number.isFinite(parsed) || parsed < 1) return 20;
+    if (!Number.isFinite(parsed) || parsed < 1) return 200;
     return Math.min(parsed, 500);
 }
 

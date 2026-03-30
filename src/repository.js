@@ -154,9 +154,9 @@ class Repository {
         return results[0] || null;
     }
 
-    static async getNewTestCasesForDaily(limit = 20) {
+    static async getNewTestCasesForDaily(limit = 200) {
         const parsedLimit = Number.parseInt(limit, 10);
-        const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 500) : 20;
+        const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 500) : 200;
         const sql = `
             SELECT tc.*
             FROM test_case tc
@@ -168,9 +168,9 @@ class Repository {
                   WHERE tr.test_case_id = tc.id
               )
             ORDER BY tc.created_at DESC
-            LIMIT ?
+            LIMIT ${safeLimit}
         `;
-        return await db.query(sql, [safeLimit]);
+        return await db.query(sql);
     }
 
     static async createTestCase(data) {
