@@ -198,3 +198,4 @@ MAIL_FROM_NAME="QA Automation Server"
 ```
 
 Luu y: Doi voi Gmail, ban nen tao **App Password** thay vi su dung mat khau goc cua tai khoan. Mọi job dang nam trong hang cho (pending) se duoc tu dong don dep khi den gio chot de phat hanh email vao cuoi ngay.
+Update trigger for build
