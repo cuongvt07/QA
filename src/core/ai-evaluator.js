@@ -31,7 +31,7 @@ class AiEvaluator {
         this.usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 };
         
         // P1.3: Budget Constraints
-        this.MAX_TOKENS_PER_SESSION = 100000; 
+        this.MAX_TOKENS_PER_SESSION = 150000; 
         this.MAX_CALLS_PER_SESSION = 6;
         this.budgetExhausted = false;
     }
@@ -434,7 +434,7 @@ Return JSON:
             try {
                 const sharp = require('sharp');
                 // Use slightly lower quality for final review to keep it snappy
-                imageBuffer = await sharp(imageBuffer).resize({ width: 768, withoutEnlargement: true }).removeAlpha().withMetadata(false).jpeg({ quality: 75 }).toBuffer();
+                imageBuffer = await sharp(imageBuffer).resize({ width: 512, withoutEnlargement: true }).removeAlpha().withMetadata(false).jpeg({ quality: 75 }).toBuffer();
             } catch (sharpError) {
                 console.warn('  [AI] [WARN] Sharp optimization failed:', sharpError.message);
             }
@@ -449,11 +449,11 @@ Return JSON:
                         {
                             role: 'user', content: [
                                 { type: 'text', text: userPromptText },
-                                { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}`, detail: 'high' } },
+                                { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}`, detail: 'low' } },
                             ]
                         }
                     ],
-                    max_tokens: 500,
+                    max_tokens: 150,
                     temperature: 0.1,
                 });
             };

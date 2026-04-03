@@ -222,6 +222,24 @@ class Repository {
         return rows.map((r) => this.enrichRunRow(r));
     }
 
+    static async getTodaysRuns() {
+        const sql = `
+            SELECT 
+                trun.*,
+                tr.score,
+                tr.total_steps,
+                tr.passed_steps,
+                tr.failed_steps,
+                tr.content as report_content
+            FROM test_run trun
+            LEFT JOIN test_report tr ON trun.id = tr.test_run_id
+            WHERE DATE(trun.created_at) = CURDATE()
+            ORDER BY trun.created_at DESC
+        `;
+        const rows = await db.query(sql);
+        return rows.map((r) => this.enrichRunRow(r));
+    }
+
     static async getRunById(id) {
         const sql = `
             SELECT

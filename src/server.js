@@ -702,14 +702,7 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
                     await queue.onIdle();
                     console.log(`[DAILY-BATCH] Queue is idle. Generating end-of-batch Excel report...`);
 
-                    const allRuns = await repo.getAllRuns();
-                    const dateStr = new Date().toISOString().split('T')[0];
-                    const todaysRuns = allRuns.filter(r => {
-                        if (!r.created_at && !r.test_time && !r.started_at) return false;
-                        const d = new Date(r.created_at || r.test_time || r.started_at);
-                        if (isNaN(d.getTime())) return false;
-                        return d.toISOString().split('T')[0] === dateStr;
-                    });
+                    const todaysRuns = await repo.getTodaysRuns();
 
                     let passCount = 0, failCount = 0;
                     todaysRuns.forEach(r => {
@@ -810,15 +803,7 @@ app.delete('/api/runs/:runId', authenticateToken, async (req, res) => {
 app.post('/api/reports/daily-mail', authenticateToken, async (req, res) => {
     try {
         console.log('[API-CRON] Executing forced daily email report...');
-        const allRuns = await repo.getAllRuns();
-        const dateStr = new Date().toISOString().split('T')[0];
-        
-        const todaysRuns = allRuns.filter(r => {
-            if (!r.created_at && !r.test_time && !r.started_at) return false;
-            const d = new Date(r.created_at || r.test_time || r.started_at);
-            if (isNaN(d.getTime())) return false;
-            return d.toISOString().split('T')[0] === dateStr;
-        });
+        const todaysRuns = await repo.getTodaysRuns();
 
         if (todaysRuns.length === 0) {
             return res.json({ message: 'No runs today. Skipped email.' });
@@ -1216,15 +1201,7 @@ function scheduleDailyReport() {
                 queue.clear();
             }
 
-            const allRuns = await repo.getAllRuns();
-            const dateStr = new Date().toISOString().split('T')[0];
-            
-            const todaysRuns = allRuns.filter(r => {
-                if (!r.created_at && !r.test_time && !r.started_at) return false;
-                const d = new Date(r.created_at || r.test_time || r.started_at);
-                if (isNaN(d.getTime())) return false;
-                return d.toISOString().split('T')[0] === dateStr;
-            });
+            const todaysRuns = await repo.getTodaysRuns();
 
             if (todaysRuns.length === 0) {
                 console.log('[SCHEDULE] No runs today. Skipping email report.');
