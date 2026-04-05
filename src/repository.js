@@ -173,6 +173,33 @@ class Repository {
         return await db.query(sql);
     }
 
+    /**
+     * Get test cases that need to be retried:
+     * 1. Status is FAIL or FATAL (failed previously)
+     * 2. Has last_run_id but no report in test_report (incomplete/crashed/blocked)
+     */
+    static async getRetryCandidatesForDaily(limit = 200) {
+        const parsedLimit = Number.parseInt(limit, 10);
+        const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 500) : 200;
+        const sql = `
+            SELECT tc.*
+            FROM test_case tc
+            WHERE tc.status NOT IN ('QUEUED', 'RUNNING')
+              AND tc.last_run_id IS NOT NULL
+              AND (
+                  tc.status IN ('FAIL', 'FATAL')
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM test_report tr
+                      WHERE tr.test_run_id = tc.last_run_id
+                  )
+              )
+            ORDER BY tc.updated_at ASC
+            LIMIT ${safeLimit}
+        `;
+        return await db.query(sql);
+    }
+
     static async createTestCase(data) {
         const { id, name, url, status, created_at, updated_at } = data;
         await db.query(

@@ -626,14 +626,26 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
         const customImageFilename = req.body?.customImageFilename;
 
         const batchId = makeId('BATCH');
-        const candidates = await repo.getNewTestCasesForDaily(limit);
+
+        // 1. Retry candidates first (failed / no-report)
+        const retryCandidates = await repo.getRetryCandidatesForDaily(limit);
+        // 2. New candidates fill remaining slots
+        const remainingSlots = Math.max(0, limit - retryCandidates.length);
+        const newCandidates = remainingSlots > 0
+            ? await repo.getNewTestCasesForDaily(remainingSlots)
+            : [];
+
+        // Merge: retry first, then new
+        const candidates = [...retryCandidates, ...newCandidates];
 
         if (!Array.isArray(candidates) || candidates.length === 0) {
             return res.json({
-                message: 'No new test cases available for daily run',
+                message: 'No test cases available for daily run (no new and no retry candidates)',
                 batchId,
-                mode: 'new_only',
+                mode: 'new_and_retry',
                 requestedLimit: limit,
+                retryCandidateCount: retryCandidates.length,
+                newCandidateCount: newCandidates.length,
                 selectedCount: 0,
                 queuedCount: 0,
                 queueConcurrency: queue.concurrency
@@ -642,6 +654,11 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
 
         const queued = [];
         const skipped = [];
+        let retryQueued = 0;
+        let newQueued = 0;
+
+        // Track which IDs are retry vs new
+        const retryIds = new Set(retryCandidates.map(tc => tc.id));
 
         for (const tc of candidates) {
             if (activeRuns.size > 0) {
@@ -665,7 +682,7 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
                 testCaseId: tc.id,
                 testName: tc.name,
                 batchId,
-                source: 'daily-new-batch-api'
+                source: retryIds.has(tc.id) ? 'daily-retry-batch-api' : 'daily-new-batch-api'
             });
 
             if (started.error) {
@@ -673,20 +690,31 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
                 continue;
             }
 
+            const isRetry = retryIds.has(tc.id);
+            if (isRetry) retryQueued++;
+            else newQueued++;
+
             queued.push({
                 test_case_id: tc.id,
                 name: tc.name,
-                runId: started.runId
+                runId: started.runId,
+                type: isRetry ? 'retry' : 'new'
             });
         }
 
+        console.log(`[DAILY-BATCH] Queued ${retryQueued} retry + ${newQueued} new = ${queued.length} total`);
+
         res.json({
-            message: `Queued ${queued.length} new test case(s)`,
+            message: `Queued ${queued.length} test case(s) (${retryQueued} retry, ${newQueued} new)`,
             batchId,
-            mode: 'new_only',
+            mode: 'new_and_retry',
             requestedLimit: limit,
+            retryCandidateCount: retryCandidates.length,
+            newCandidateCount: newCandidates.length,
             selectedCount: candidates.length,
             queuedCount: queued.length,
+            retryQueuedCount: retryQueued,
+            newQueuedCount: newQueued,
             skippedCount: skipped.length,
             queueConcurrency: queue.concurrency,
             cliCaseConcurrency: resolveCliConcurrency(req.body || {}),
