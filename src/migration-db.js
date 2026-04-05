@@ -5,7 +5,7 @@ async function migrate() {
 
     try {
         // 1. Add batch_id to test_run
-        console.log('[1/3] Adding batch_id to test_run...');
+        console.log('[1/5] Adding batch_id to test_run...');
         const columns = await db.query("SHOW COLUMNS FROM test_run LIKE 'batch_id'");
         if (columns.length === 0) {
             await db.query(`
@@ -70,7 +70,7 @@ async function migrate() {
         }
 
         // 4. Add last_run_id to test_case
-        console.log('[4/4] Adding last_run_id to test_case...');
+        console.log('[4/5] Adding last_run_id to test_case...');
         try {
             const tcColumns = await db.query("SHOW COLUMNS FROM test_case LIKE 'last_run_id'");
             if (tcColumns.length === 0) {
@@ -94,6 +94,40 @@ async function migrate() {
             }
         } catch (e) {
             console.error('    - Error adding/modifying last_run_id:', e.message);
+        }
+
+        // 5. Add exit_code to test_run
+        console.log('[5/5] Adding exit_code to test_run...');
+        try {
+            const exitCodeColumns = await db.query("SHOW COLUMNS FROM test_run LIKE 'exit_code'");
+            if (exitCodeColumns.length === 0) {
+                await db.query(`
+                    ALTER TABLE test_run 
+                    ADD COLUMN exit_code INT DEFAULT NULL AFTER status
+                `);
+                console.log('    - exit_code column added.');
+            } else {
+                console.log('    - exit_code column already exists.');
+            }
+        } catch (e) {
+            console.error('    - Error adding exit_code:', e.message);
+        }
+
+        // 6. Ensure test_run.output is LONGTEXT (prevents "Data too long" errors)
+        console.log('[6/6] Ensuring test_run.output is LONGTEXT...');
+        try {
+            const outputCol = await db.query("SHOW COLUMNS FROM test_run LIKE 'output'");
+            if (outputCol.length > 0) {
+                const colType = outputCol[0].Type.toLowerCase();
+                if (colType !== 'longtext') {
+                    await db.query('ALTER TABLE test_run MODIFY COLUMN output LONGTEXT');
+                    console.log(`    - test_run.output upgraded from ${colType} to LONGTEXT.`);
+                } else {
+                    console.log('    - test_run.output is already LONGTEXT.');
+                }
+            }
+        } catch (e) {
+            console.error('    - Error modifying output column:', e.message);
         }
 
         console.log('\n✅ Database migration completed successfully.');

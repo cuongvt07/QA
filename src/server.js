@@ -624,6 +624,12 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
         const useAi = req.body?.useAi;
         const concurrency = req.body?.concurrency;
         const customImageFilename = req.body?.customImageFilename;
+        const clearQueue = req.body?.clearQueue === true;
+
+        if (clearQueue && (queue.size > 0 || queue.pending > 0)) {
+            console.log(`[DAILY-BATCH] Manual trigger: Clearing ${queue.size} pending tasks before starting...`);
+            queue.clear();
+        }
 
         const batchId = makeId('BATCH');
 

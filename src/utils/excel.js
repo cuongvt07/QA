@@ -18,7 +18,12 @@ async function generateDailyExcel(runs, reportsDir) {
         { header: 'Reason Codes', key: 'reason_codes', width: 30 }
     ];
 
-    runs.forEach(run => {
+    // Filter: Chỉ lấy những TC nào có trạng thái REVIEW
+    const filteredRuns = runs.filter(run => 
+        (String(run.status || '').toUpperCase() === 'REVIEW' || String(run.result_status || '').toUpperCase() === 'REVIEW')
+    );
+
+    filteredRuns.forEach(run => {
         const rc = Array.isArray(run.reason_codes) ? run.reason_codes.join(', ') : (run.reason_codes || '');
         sheet.addRow({
             name: run.name || run.tc_code || 'Untitled',

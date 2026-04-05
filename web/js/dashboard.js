@@ -399,6 +399,63 @@
         }
     });
 
+    const btnManualDailyRun = $('#btn-manual-daily-run');
+    if (btnManualDailyRun) {
+        btnManualDailyRun.addEventListener('click', () => runDailyBatch(btnManualDailyRun));
+    }
+
+    async function runDailyBatch(btnEl) {
+        const limitInput = $('#setting-daily-new-limit');
+        const headlessInput = $('#setting-headless');
+        const limit = limitInput ? Number.parseInt(limitInput.value || '20', 10) || 20 : 20;
+        const headless = headlessInput ? headlessInput.value !== 'false' : true;
+        const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
+        const currentSettings = loadFromStorage('qa_settings') || {};
+        const customImageFilename = currentSettings.customImageFilename || undefined;
+
+        const confirmed = await showPopup({
+            title: 'Chạy Daily Batch',
+            message: `Hệ thống sẽ quét các Test Case lỗi để chạy lại và thêm tối đa <b>${limit}</b> Test Case mới.<br><br><b>Lưu ý:</b> Thao tác này sẽ xóa sạch các test đang chờ trong hàng đợi để ưu tiên Batch mới (y hệt quy trình tự động).`,
+            okText: 'Xác nhận Chạy',
+            cancelText: 'Hủy bỏ',
+            isConfirm: true
+        });
+        
+        if (!confirmed) return;
+
+        const originalHtml = btnEl.innerHTML;
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<span class="loading-spinner" style="width:14px;height:14px;border-width:2px;margin-right:8px;"></span>Đang xử lý...';
+
+        try {
+            const res = await Auth.fetch('/api/batches/daily-new', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    limit,
+                    headless,
+                    useAi,
+                    customImageFilename,
+                    clearQueue: true // Mặc định xóa queue khi chạy batch thủ công để giống cronjob
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+            await syncAllFromApi({ render: true, includeReports: false });
+            await showPopup({
+                title: 'Daily Batch Queued',
+                message: `Đã đưa <b>${data.queuedCount || 0}</b>/<b>${data.selectedCount || 0}</b> TC vào hàng đợi.<br>Batch ID: <code>${escapeHtml(data.batchId || '-')}</code><br>Hệ thống sẽ gửi email báo cáo khi hoàn tất.`
+            });
+        } catch (err) {
+            console.error('Daily batch failed:', err);
+            await showPopup({ title: 'Lỗi', message: 'Không thể chạy batch: ' + err.message });
+        } finally {
+            btnEl.disabled = false;
+            btnEl.innerHTML = originalHtml;
+        }
+    }
+
     $('#btn-close-modal').addEventListener('click', closeNewTestModal);
     $('#btn-cancel-modal').addEventListener('click', closeNewTestModal);
 
@@ -2029,53 +2086,7 @@
 
     const btnRunDailyNew = $('#btn-run-daily-new');
     if (btnRunDailyNew) {
-        btnRunDailyNew.addEventListener('click', async () => {
-            const limit = Number.parseInt($('#setting-daily-new-limit')?.value || '20', 10) || 20;
-            const headless = $('#setting-headless') ? $('#setting-headless').value !== 'false' : true;
-            const useAi = $('#checkbox-use-ai') ? $('#checkbox-use-ai').checked : true;
-            const currentSettings = loadFromStorage('qa_settings') || {};
-            const customImageFilename = currentSettings.customImageFilename || undefined;
-
-            const confirmed = await showPopup({
-                title: 'Queue Daily New Run',
-                message: `Queue toi da <b>${limit}</b> test case moi chua tung chay?<br><br>Server queue hien tai se xu ly theo hang doi, mac dinh 5 TC chay cung luc.`,
-                okText: 'Queue Now',
-                cancelText: 'Cancel',
-                isConfirm: true
-            });
-            if (!confirmed) return;
-
-            const originalHtml = btnRunDailyNew.innerHTML;
-            btnRunDailyNew.disabled = true;
-            btnRunDailyNew.innerHTML = '<span class="loading-spinner"></span> Queueing...';
-
-            try {
-                const res = await Auth.fetch('/api/batches/daily-new', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        limit,
-                        headless,
-                        useAi,
-                        customImageFilename
-                    })
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-                await syncAllFromApi({ render: true, includeReports: false });
-                await showPopup({
-                    title: 'Daily Batch Queued',
-                    message: `Da queue <b>${data.queuedCount || 0}</b>/<b>${data.selectedCount || 0}</b> TC moi.<br>Batch ID: <code>${escapeHtml(data.batchId || '-')}</code><br>Queue concurrency: <b>${data.queueConcurrency || 5}</b>`
-                });
-            } catch (err) {
-                console.error('Daily new batch failed:', err);
-                await showPopup({ title: 'Batch Failed', message: 'Khong the queue daily batch: ' + err.message });
-            } finally {
-                btnRunDailyNew.disabled = false;
-                btnRunDailyNew.innerHTML = originalHtml;
-            }
-        });
+        btnRunDailyNew.addEventListener('click', () => runDailyBatch(btnRunDailyNew));
     }
 
     // ============================================================

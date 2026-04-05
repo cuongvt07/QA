@@ -46,6 +46,9 @@ COPY eng.traineddata ./
 # Install Playwright chromium browser
 RUN npx playwright install chromium
 
+# Ensure entrypoint script is executable
+RUN chmod +x /app/scripts/docker-entrypoint.sh
+
 # Expose server port
 EXPOSE 8090
 
@@ -53,4 +56,5 @@ EXPOSE 8090
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD node -e "const http = require('http'); http.get('http://localhost:8090/api/test-cases', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"
 
-CMD ["node", "src/server.js"]
+# Use entrypoint script to run migrations and start server
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
