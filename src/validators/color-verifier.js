@@ -154,8 +154,15 @@ async function extractRepresentativeColor(imagePath, diffMask) {
         // Fallback to ColorThief below.
     }
 
-    const tmpDir = path.join(process.cwd(), 'tmp');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    let tmpDir = path.join(process.cwd(), 'tmp');
+    try {
+        if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+        fs.accessSync(tmpDir, fs.constants.W_OK);
+    } catch (e) {
+        const os = require('os');
+        tmpDir = path.join(os.tmpdir(), 'customily-qa-tmp');
+        if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    }
     const tempCropPath = path.join(tmpDir, `color_crop_${Date.now()}_${Math.round(Math.random() * 10000)}.png`);
 
     try {

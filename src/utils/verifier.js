@@ -14,8 +14,15 @@ async function verifyZone(previewPath, bbox, step) {
         return { results: {}, croppedPath: null };
     }
 
-    const tmpDir = path.join(process.cwd(), 'tmp');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    let tmpDir = path.join(process.cwd(), 'tmp');
+    try {
+        if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+        fs.accessSync(tmpDir, fs.constants.W_OK);
+    } catch (e) {
+        const os = require('os');
+        tmpDir = path.join(os.tmpdir(), 'customily-qa-tmp');
+        if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    }
 
     const randomSuffix = Math.round(Math.random() * 1000000);
     const croppedPath = path.join(tmpDir, `verify-${Date.now()}-${randomSuffix}.png`);

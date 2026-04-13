@@ -745,7 +745,15 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
                         else if (['FAIL', 'FATAL'].includes(s)) failCount++;
                     });
 
-                    const tmpDir = path.join(__dirname, '../tmp');
+                    let tmpDir = path.join(__dirname, '../tmp');
+                    try {
+                        if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+                        fs.accessSync(tmpDir, fs.constants.W_OK);
+                    } catch (e) {
+                        const os = require('os');
+                        tmpDir = path.join(os.tmpdir(), 'customily-qa-tmp');
+                        if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+                    }
                     const excelPath = await generateDailyExcel(todaysRuns, tmpDir);
                     
                     const sent = await sendDailyReport(excelPath, passCount, failCount, todaysRuns.length);
@@ -850,7 +858,15 @@ app.post('/api/reports/daily-mail', authenticateToken, async (req, res) => {
             else if (['FAIL', 'FATAL'].includes(s)) failCount++;
         });
 
-        const tmpDir = path.join(__dirname, '../tmp');
+        let tmpDir = path.join(__dirname, '../tmp');
+        try {
+            if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+            fs.accessSync(tmpDir, fs.constants.W_OK);
+        } catch (e) {
+            const os = require('os');
+            tmpDir = path.join(os.tmpdir(), 'customily-qa-tmp');
+            if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+        }
         const excelPath = await generateDailyExcel(todaysRuns, tmpDir);
         
         const sent = await sendDailyReport(excelPath, passCount, failCount, todaysRuns.length);
@@ -1249,7 +1265,15 @@ function scheduleDailyReport() {
                 else if (['FAIL', 'FATAL'].includes(s)) failCount++;
             });
 
-            const tmpDir = path.join(__dirname, '../tmp');
+            let tmpDir = path.join(__dirname, '../tmp');
+            try {
+                if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+                fs.accessSync(tmpDir, fs.constants.W_OK);
+            } catch (e) {
+                const os = require('os');
+                tmpDir = path.join(os.tmpdir(), 'customily-qa-tmp');
+                if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+            }
             const failedRuns = todaysRuns.filter(r => ['FAIL', 'FATAL'].includes(String(r.status).toUpperCase()));
             const excelPath = await generateDailyExcel(failedRuns.length > 0 ? failedRuns : todaysRuns, tmpDir);
             

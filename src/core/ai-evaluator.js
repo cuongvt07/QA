@@ -121,11 +121,11 @@ class AiEvaluator {
                     {
                         role: 'user', content: [
                             { type: 'text', text: userPromptText },
-                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${beforeBuffer.toString('base64')}` } },
-                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${afterBuffer.toString('base64')}` } },
+                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${beforeBuffer.toString('base64')}`, detail: 'low' } },
+                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${afterBuffer.toString('base64')}`, detail: 'low' } },
                             ...(groupType === 'image_option' && optionThumbnail ? [
                                 { type: 'text', text: 'REFERENCE THUMBNAIL:' },
-                                { type: 'image_url', image_url: { url: optionThumbnail } },
+                                { type: 'image_url', image_url: { url: optionThumbnail, detail: 'low' } },
                             ] : [])
                         ]
                     }
@@ -172,7 +172,7 @@ class AiEvaluator {
             const hasCrop = verifyResults.croppedPath && fs.existsSync(verifyResults.croppedPath) && !suspiciousCrop;
 
             const fullPreviewBuffer = await sharp(previewPath)
-                .resize({ width: 512, withoutEnlargement: true }) // Reduced from 800
+                .resize({ width: 400, withoutEnlargement: true }) // Reduced from 512
                 .jpeg({ quality: 80 })
                 .toBuffer();
 
@@ -180,7 +180,7 @@ class AiEvaluator {
             if (hasCrop) {
                 try {
                     croppedZoneBuffer = await sharp(verifyResults.croppedPath)
-                        .resize({ width: 320, withoutEnlargement: true }) // Reduced from 400
+                        .resize({ width: 256, withoutEnlargement: true }) // Reduced from 320
                         .jpeg({ quality: 85 })
                         .toBuffer();
                 } catch (e) {
@@ -228,19 +228,19 @@ Return ONLY JSON: { "verdict": "PASS"|"FAIL", "reason": "...", "confidence": 0.0
                     content: [
                         { type: 'text', text: `=== STEP CONTEXT ===\nStep: "${step.name}"\nType: ${step.group_type}\nExpected Value: "${step.value_chosen}"\nSuspicious crop fallback: ${suspiciousCrop ? 'yes' : 'no'}\n\n=== CODE VERIFICATION RESULTS ===\n${codeContext}` },
                         { type: 'text', text: 'IMAGE 1: FULL PRODUCT PREVIEW' },
-                        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${fullPreviewBuffer.toString('base64')}` } },
+                        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${fullPreviewBuffer.toString('base64')}`, detail: 'low' } },
                     ]
                 }
             ];
 
             if (croppedZoneBuffer) {
                 messages[1].content.push({ type: 'text', text: 'IMAGE 2: CROPPED ZONE (area of change)' });
-                messages[1].content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${croppedZoneBuffer.toString('base64')}` } });
+                messages[1].content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${croppedZoneBuffer.toString('base64')}`, detail: 'low' } });
             }
 
             if (thumbnailBuffer) {
                 messages[1].content.push({ type: 'text', text: hasCrop ? 'IMAGE 3: REFERENCE THUMBNAIL (what was selected)' : 'IMAGE 2: REFERENCE THUMBNAIL (what was selected — for context only, do NOT compare shapes directly)' });
-                messages[1].content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${thumbnailBuffer.toString('base64')}` } });
+                messages[1].content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${thumbnailBuffer.toString('base64')}`, detail: 'low' } });
             }
 
             let specificInstruction = '';
@@ -364,8 +364,8 @@ Return JSON:
                     {
                         role: 'user', content: [
                             { type: 'text', text: `Did the interaction reveal new options or confirm the selection? ${structuralNotice}` },
-                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${await prepare(beforePath)}` } },
-                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${await prepare(afterPath)}` } },
+                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${await prepare(beforePath)}`, detail: 'low' } },
+                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${await prepare(afterPath)}`, detail: 'low' } },
                         ]
                     }
                 ],
