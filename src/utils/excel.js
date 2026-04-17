@@ -14,14 +14,34 @@ async function generateDailyExcel(runs, reportsDir) {
         { header: 'Pass Steps', key: 'passed_steps', width: 15 },
         { header: 'Total Steps', key: 'total_steps', width: 15 },
         { header: 'Duration', key: 'duration', width: 15 },
+        { header: 'Confidence', key: 'confidence', width: 12 },
         { header: 'Time', key: 'time', width: 25 },
         { header: 'Reason Codes', key: 'reason_codes', width: 30 }
     ];
 
-    // Filter: Chỉ lấy những TC nào có trạng thái REVIEW
-    const filteredRuns = runs.filter(run => 
-        (String(run.status || '').toUpperCase() === 'REVIEW' || String(run.result_status || '').toUpperCase() === 'REVIEW')
-    );
+    // Filter logic:
+    // 1. Status/ResultStatus is REVIEW
+    // 2. Confidence < 60% (confidence_score < 0.6)
+    // 3. 0/2 steps or 0/2 cases passed
+    const filteredRuns = runs.filter(run => {
+        const status = String(run.status || '').toUpperCase();
+        const resultStatus = String(run.result_status || '').toUpperCase();
+        
+        // 1. Status or ResultStatus is FAIL, FATAL, or REVIEW
+        const isProblematic = ['FAIL', 'FATAL', 'REVIEW'].includes(status) || 
+                              ['FAIL', 'FATAL', 'REVIEW'].includes(resultStatus);
+        
+        // 2. Confidence threshold: 60% (0.6)
+        const confidenceScore = run.confidence_score !== undefined ? run.confidence_score : 1.0;
+        const lowConfidence = confidenceScore < 0.6;
+        
+        // 3. 0/2 case check (both steps and cases level)
+        const isZeroOfTwoSteps = (run.total_steps === 2 && run.passed_steps === 0);
+        const isZeroOfTwoCases = (run.total_cases === 2 && run.passed_cases === 0);
+        const isZeroOfTwo = isZeroOfTwoSteps || isZeroOfTwoCases;
+
+        return isProblematic || lowConfidence || isZeroOfTwo;
+    });
 
     filteredRuns.forEach(run => {
         const rc = Array.isArray(run.reason_codes) ? run.reason_codes.join(', ') : (run.reason_codes || '');
@@ -33,6 +53,7 @@ async function generateDailyExcel(runs, reportsDir) {
             passed_steps: run.passed_steps || 0,
             total_steps: run.total_steps || 0,
             duration: `${Math.round((run.duration_ms || 0)/1000)}s`,
+            confidence: run.confidence_score !== undefined ? `${Math.round(run.confidence_score * 100)}%` : '100%',
             time: new Date(run.test_time || run.started_at || run.created_at).toLocaleString(),
             reason_codes: rc
         });

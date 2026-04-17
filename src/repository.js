@@ -249,8 +249,8 @@ class Repository {
         return rows.map((r) => this.enrichRunRow(r));
     }
 
-    static async getTodaysRuns() {
-        const sql = `
+    static async getTodaysRuns(batchId = null) {
+        let sql = `
             SELECT 
                 trun.*,
                 tr.score,
@@ -261,9 +261,14 @@ class Repository {
             FROM test_run trun
             LEFT JOIN test_report tr ON trun.id = tr.test_run_id
             WHERE DATE(trun.created_at) = CURDATE()
-            ORDER BY trun.created_at DESC
         `;
-        const rows = await db.query(sql);
+        const params = [];
+        if (batchId) {
+            sql += ' OR trun.batch_id = ?';
+            params.push(batchId);
+        }
+        sql += ' ORDER BY trun.created_at DESC';
+        const rows = await db.query(sql, params);
         return rows.map((r) => this.enrichRunRow(r));
     }
 

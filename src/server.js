@@ -736,7 +736,7 @@ app.post('/api/batches/daily-new', authenticateToken, async (req, res) => {
                     await queue.onIdle();
                     console.log(`[DAILY-BATCH] Queue is idle. Generating end-of-batch Excel report...`);
 
-                    const todaysRuns = await repo.getTodaysRuns();
+                    const todaysRuns = await repo.getTodaysRuns(batchId);
 
                     let passCount = 0, failCount = 0;
                     todaysRuns.forEach(r => {
@@ -1274,8 +1274,7 @@ function scheduleDailyReport() {
                 tmpDir = path.join(os.tmpdir(), 'customily-qa-tmp');
                 if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
             }
-            const failedRuns = todaysRuns.filter(r => ['FAIL', 'FATAL'].includes(String(r.status).toUpperCase()));
-            const excelPath = await generateDailyExcel(failedRuns.length > 0 ? failedRuns : todaysRuns, tmpDir);
+            const excelPath = await generateDailyExcel(todaysRuns, tmpDir);
             
             const success = await sendDailyReport(excelPath, passCount, failCount, todaysRuns.length);
             if (success && fs.existsSync(excelPath)) {
