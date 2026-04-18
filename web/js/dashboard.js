@@ -295,7 +295,13 @@
             const filterStatus = state.filters.status;
             if (filterStatus !== 'ALL') {
                 const normStatus = normalizeRunStatus(run.status);
-                if (normStatus !== filterStatus) return false;
+                if (filterStatus === 'PASS') {
+                    if (normStatus !== 'PASS' && normStatus !== 'PASS_AUTO') return false;
+                } else if (filterStatus === 'FAIL') {
+                    if (normStatus !== 'FAIL' && normStatus !== 'FAILED' && normStatus !== 'FATAL') return false;
+                } else {
+                    if (normStatus !== filterStatus) return false;
+                }
             }
 
             // 3. Date Filter
@@ -319,6 +325,18 @@
 
             return true;
         });
+    }
+
+    function updateFilterMatchCount(count, total) {
+        const countEl = $('#filter-match-count');
+        const container = $('#filter-count-container');
+        if (!countEl) return;
+
+        countEl.textContent = count;
+        if (container) {
+            container.style.visibility = (state.filters.status !== 'ALL' || state.searchQuery || state.filters.date !== 'ALL') ? 'visible' : 'hidden';
+            container.title = `Total: ${total}`;
+        }
     }
 
     const modalNewTest = $('#modal-new-test');
@@ -929,7 +947,10 @@
         updateDashboardStats();
 
         // Filter and sort runs
-        const sortedLatestRuns = [...state.testRuns].sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a));
+        const filteredRuns = getFilteredRuns(state.testRuns);
+        updateFilterMatchCount(filteredRuns.length, state.testRuns.length);
+        
+        const sortedLatestRuns = [...filteredRuns].sort((a, b) => getRunTimeValue(b) - getRunTimeValue(a));
         const totalItems = sortedLatestRuns.length;
 
         if (totalItems === 0) {
@@ -955,9 +976,25 @@
         const query = state.searchQuery || '';
 
         const filteredCases = state.testCases.filter(tc => {
-            if (!query) return true;
-            return (tc.name || '').toLowerCase().includes(query);
+            // 1. Search filter
+            if (query && !(tc.name || '').toLowerCase().includes(query)) return false;
+
+            // 2. Status filter
+            const filterStatus = state.filters.status;
+            if (filterStatus !== 'ALL') {
+                const normStatus = normalizeRunStatus(tc.status);
+                if (filterStatus === 'PASS') {
+                    if (normStatus !== 'PASS' && normStatus !== 'PASS_AUTO') return false;
+                } else if (filterStatus === 'FAIL') {
+                    if (normStatus !== 'FAIL' && normStatus !== 'FAILED' && normStatus !== 'FATAL') return false;
+                } else {
+                    if (normStatus !== filterStatus) return false;
+                }
+            }
+            return true;
         });
+
+        updateFilterMatchCount(filteredCases.length, state.testCases.length);
 
         // Pagination for Test Cases
         const totalItems = filteredCases.length;
@@ -1147,6 +1184,7 @@
     function renderHistory() {
         const el = $('#history-timeline');
         const filteredRuns = getFilteredRuns(state.testRuns);
+        updateFilterMatchCount(filteredRuns.length, state.testRuns.length);
 
         if (filteredRuns.length === 0) {
             const query = state.searchQuery;
