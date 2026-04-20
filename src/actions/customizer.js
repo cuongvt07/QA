@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Customizer Module â€” v3.1
  * Handles dynamic option groups that appear after selections.
  * Re-scans after each interaction to discover new groups.
@@ -674,11 +674,11 @@ async function capturePreviewScreenshot(page, filepath) {
                     if (allTransparent) return 'BLANK_DETECTED';
                 }
 
-                return canvas.toDataURL('image/png');
+                return canvas.toDataURL('image/webp', 0.8);
             });
 
             if (canvasData && canvasData !== 'BLANK_DETECTED') {
-                const base64Data = canvasData.replace(/^data:image\/png;base64,/, '');
+                const base64Data = canvasData.replace(/^data:image\/webp;base64,/, '');
                 fs.writeFileSync(filepath, base64Data, 'base64');
                 captureState.domOnlyUntil = 0;
                 captureState.canvasUnavailableMode = false;
@@ -714,7 +714,7 @@ async function capturePreviewScreenshot(page, filepath) {
                 if (isVisible) {
                     const box = await el.boundingBox();
                     if (box && box.width > 50 && box.height > 50) {
-                        await el.screenshot({ path: filepath });
+                        await el.screenshot({ path: filepath, type: 'webp', quality: 80 });
                         captureState.lastPreviewSelector = selector;
                         return filepath;
                     }
@@ -724,7 +724,7 @@ async function capturePreviewScreenshot(page, filepath) {
     }
     
     // Final desperate fallback
-    await page.screenshot({ path: filepath, fullPage: false });
+    await page.screenshot({ path: filepath, fullPage: false, type: 'webp', quality: 80 });
     return filepath;
 }
 
@@ -854,7 +854,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
             };
 
             try {
-                let beforePath = path.join(screenshotDir, `step_${stepIndex}_before.png`);
+                let beforePath = path.join(screenshotDir, `step_${stepIndex}_before.webp`);
                 
                 // Wait for the specific group type to ensure the page is ready
                 const waitTime = group.type === 'image_option' ? 150 : 110;
@@ -1105,7 +1105,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                     await waitForGroupCountStable(page);
                 }
 
-                const afterPath = path.join(screenshotDir, `step_${stepIndex}_after.png`);
+                const afterPath = path.join(screenshotDir, `step_${stepIndex}_after.webp`);
                 if (stepData.capture_preview_state) {
                     const tSnap = Date.now();
                     await capturePreviewScreenshot(page, afterPath);

@@ -569,6 +569,33 @@ class Repository {
             await connection.query(sql, [values]);
         });
     }
+
+    /**
+     * ✅ Batch insert products, skipping existing ones (INSERT IGNORE)
+     */
+    static async batchInsertProductsIgnore(products) {
+        if (products.length === 0) return;
+
+        return await db.transaction(async (connection) => {
+            const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+            const sql = `
+                INSERT IGNORE INTO products (
+                    product_id, platform, redirect_url, final_url, customizable, note, status_code, has_error, checked_at, created_at, updated_at
+                ) VALUES ?
+            `;
+
+            const values = products.map(p => {
+                const checkTime = p.checked_at ? new Date(p.checked_at).toISOString().slice(0, 19).replace('T', ' ') : now;
+                return [
+                    p.product_id, p.platform, p.redirect_url, p.final_url,
+                    p.customizable ? 1 : 0, p.note, p.status_code,
+                    p.has_error ? 1 : 0, checkTime, now, now
+                ];
+            });
+
+            await connection.query(sql, [values]);
+        });
+    }
     /**
      * ✅ User Management
      */

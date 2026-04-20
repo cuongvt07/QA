@@ -497,11 +497,11 @@ async function captureCartEvidence(page, outputDir, filenamePrefix = 'step_cart'
             '.added-to-cart-content',
         ];
 
-        const panelPath = path.join(outputDir, `${filenamePrefix}_panel.png`);
-        const viewportPath = path.join(outputDir, `${filenamePrefix}_viewport.png`);
+        const panelPath = path.join(outputDir, `${filenamePrefix}_panel.webp`);
+        const viewportPath = path.join(outputDir, `${filenamePrefix}_viewport.webp`);
 
         // Capture viewport context
-        await page.screenshot({ path: viewportPath, fullPage: false });
+        await page.screenshot({ path: viewportPath, fullPage: false, type: 'webp', quality: 80 });
 
         let capturedPanel = false;
         let finalSelector = null;
@@ -519,7 +519,9 @@ async function captureCartEvidence(page, outputDir, filenamePrefix = 'step_cart'
                                 y: Math.max(0, box.y),
                                 width: box.width,
                                 height: box.height
-                            }
+                            },
+                            type: 'webp',
+                            quality: 80
                         });
                         capturedPanel = true;
                         finalSelector = selector;

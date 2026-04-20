@@ -20,7 +20,7 @@ function drawMultipleBoundingBoxes(inputPath, outputPath, annotations) {
             // Guarantee pure PNG header so pngjs doesn't crash on invalid signatures
             const pngBuffer = await sharp(inputPath).png().toBuffer();
 
-            new PNG({ filterType: 4 }).parse(pngBuffer, (err, parsedPng) => {
+            new PNG({ filterType: 4 }).parse(pngBuffer, async (err, parsedPng) => {
                 if (err || !parsedPng || !parsedPng.data) {
                     console.warn('    ⚠️ Error parsing image for annotation:', err?.message || 'Invalid PNG data');
                     return resolve(false);
@@ -72,13 +72,14 @@ function drawMultipleBoundingBoxes(inputPath, outputPath, annotations) {
                         }
                     }
 
-                    const out = fs.createWriteStream(outputPath);
-                    out.on('finish', () => resolve(true));
-                    out.on('error', (e) => {
-                        console.warn('    ⚠️ Error saving annotated image:', e.message);
-                        resolve(false);
-                    });
-                    png.pack().pipe(out);
+                    const annotatedBuffer = await sharp(png.data, {
+                        raw: { width, height, channels: 4 }
+                    })
+                    .webp({ quality: 80 })
+                    .toBuffer();
+
+                    fs.writeFileSync(outputPath, annotatedBuffer);
+                    resolve(true);
                 } catch (drawErr) {
                     console.warn('    ⚠️ Error drawing annotation:', drawErr.message);
                     resolve(false);

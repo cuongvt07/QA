@@ -119,7 +119,7 @@ async function capturePreviewFast(page, outputPath = null) {
             for (const sel of selectors) {
                 const c = document.querySelector(sel);
                 if (c && c.width > 100 && c.height > 100) {
-                    return c.toDataURL('image/png');
+                    return c.toDataURL('image/webp', 0.8);
                 }
             }
             return null;
@@ -127,7 +127,7 @@ async function capturePreviewFast(page, outputPath = null) {
 
         if (dataUrl) {
             console.log('[PERF] canvas.toDataURL — skip scroll');
-            const base64 = dataUrl.replace(/^data:image\/(png|jpeg);base64,/, '');
+            const base64 = dataUrl.replace(/^data:image\/(webp|png|jpeg);base64,/, '');
             const buffer = Buffer.from(base64, 'base64');
             if (outputPath) fs.writeFileSync(outputPath, buffer);
             return buffer;
@@ -149,7 +149,7 @@ async function capturePreviewFast(page, outputPath = null) {
         await page.waitForTimeout(1000);
     }
     
-    const buffer = await page.screenshot({ type: 'png' });
+    const buffer = await page.screenshot({ type: 'webp', quality: 80 });
     if (outputPath) fs.writeFileSync(outputPath, buffer);
     return buffer;
 }
@@ -470,7 +470,7 @@ async function main() {
                             // Step 4.4: ANNOTATE (Step-level)
                             if (bbox && bbox.w > 0 && bbox.h > 0 && bbox.source === 'opencv' && fs.existsSync(step.state_after)) {
                                 const meta = await sharp(step.state_after).metadata();
-                                const annotatedPath = step.state_after.replace('.png', '_step_annotated.png');
+                                const annotatedPath = step.state_after.replace('.webp', '_step_annotated.webp');
                                 const annotations = [{
                                     bbox: [
                                         Math.round((bbox.x / meta.width) * 1000),
@@ -526,7 +526,7 @@ async function main() {
                     })(),
                     (async () => {
                         const tCaptureFast = Date.now();
-                        const finalPreviewPath = path.join(caseDir, 'final_preview.png');
+                        const finalPreviewPath = path.join(caseDir, 'final_preview.webp');
                         finalPreviewBuffer = await capturePreviewFast(page, finalPreviewPath);
                         console.log(`[PERF] capturePreviewFast: ${Date.now() - tCaptureFast}ms`);
                         
@@ -669,7 +669,7 @@ async function main() {
                 // Final AI Review
                 let finalPreviewPathToUse = lastStepWithAfter ? lastStepWithAfter.state_after : null;
                 if (finalPreviewBuffer) {
-                    finalPreviewPathToUse = path.join(caseDir, 'final_preview.png');
+                    finalPreviewPathToUse = path.join(caseDir, 'final_preview.webp');
                 }
 
                 const hasReviewablePreview =
