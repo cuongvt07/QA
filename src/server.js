@@ -122,6 +122,48 @@ app.get('/api/me', authenticateToken, async (req, res) => {
 
 // --- User Management API ---
 
+app.post('/api/products/batch-add', authenticateToken, async (req, res) => {
+    try {
+        console.log('[API] Processing batch-add request...', { count: req.body?.products?.length });
+        const { products, platform: commonPlatform, Platform: commonPlatformUpper } = req.body;
+        const globalPlatform = commonPlatform || commonPlatformUpper || 'printerval.com';
+
+        if (!products || !Array.isArray(products) || products.length === 0) {
+            return res.status(400).json({ error: 'Missing or invalid products array' });
+        }
+
+        const now = new Date();
+        const productData = products.map(item => {
+            const platform = item.platform || item.Platform || globalPlatform;
+            const slug = item.slug || '';
+            const id = item.id || '';
+            const url = `https://${platform}/${slug}-p${id}`;
+
+            return {
+                product_id: String(id),
+                platform: platform,
+                redirect_url: url,
+                final_url: url,
+                customizable: true,
+                note: 'Batch added via API',
+                status_code: 200,
+                has_error: false,
+                checked_at: now
+            };
+        });
+
+        await repo.batchInsertProductsIgnore(productData);
+        res.status(201).json({
+            message: `Successfully processed ${productData.length} products (Skipped existing)`,
+            count: productData.length
+        });
+    } catch (error) {
+        console.error('[API] Error in batch-add:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+
 app.get('/api/users', authenticateToken, async (req, res) => {
     try {
         const users = await repo.getAllUsers();
@@ -914,45 +956,6 @@ app.get('/api/products', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/products/batch-add', authenticateToken, async (req, res) => {
-    try {
-        const { products, platform: commonPlatform, Platform: commonPlatformUpper } = req.body;
-        const globalPlatform = commonPlatform || commonPlatformUpper || 'printerval.com';
-
-        if (!products || !Array.isArray(products) || products.length === 0) {
-            return res.status(400).json({ error: 'Missing or invalid products array' });
-        }
-
-        const now = new Date();
-        const productData = products.map(item => {
-            const platform = item.platform || item.Platform || globalPlatform;
-            const slug = item.slug || '';
-            const id = item.id || '';
-            const url = `https://${platform}/${slug}-p${id}`;
-
-            return {
-                product_id: String(id),
-                platform: platform,
-                redirect_url: url,
-                final_url: url,
-                customizable: true,
-                note: 'Batch added via API',
-                status_code: 200,
-                has_error: false,
-                checked_at: now
-            };
-        });
-
-        await repo.batchInsertProductsIgnore(productData);
-        res.status(201).json({
-            message: `Successfully processed ${productData.length} products (Skipped existing)`,
-            count: productData.length
-        });
-    } catch (error) {
-        console.error('[API] Error in batch-add:', error.message);
-        res.status(500).json({ error: error.message });
-    }
-});
 
 app.post('/api/products/crawl', authenticateToken, async (req, res) => {
     try {
@@ -1340,6 +1343,9 @@ scheduleDailyReport();
 
 // SPA Fallback for HTML5 History API (pushState)
 app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.path.startsWith('/api/')) {
+        console.error(`[ROUTING ERROR] No handler found for ${req.method} ${req.path}`);
+    }
     if (req.method !== 'GET') return next();
     if (req.path.startsWith('/api/')) {
         return res.status(404).json({ error: 'Endpoint not found' });
