@@ -447,6 +447,15 @@ async function startEngineRun(payload) {
                     executionStatus === 'COMPLETED' ? 'PASS' : 'FAIL'
                 );
 
+                // Guard: If CLI reported success but no report was generated,
+                // something went wrong — do not let it silently pass.
+                if (executionStatus === 'COMPLETED' && !reportResultStatus && !finalReportCode) {
+                    console.warn(`[SERVER] ⚠️ Run ${runId} completed with exit code 0 but NO report.json was found. Forcing status to FAIL.`);
+                }
+                const safeFinalStatus = (executionStatus === 'COMPLETED' && !reportResultStatus && !finalReportCode)
+                    ? 'FAIL'
+                    : finalBusinessStatus;
+
                 // Update Run - Execution status only (COMPLETED/FAILED)
                 await repo.updateRun(runId, {
                     status: executionStatus,
@@ -460,7 +469,7 @@ async function startEngineRun(payload) {
 
                 if (payload.testCaseId) {
                     await repo.updateTestCase(payload.testCaseId, { 
-                        status: finalBusinessStatus,
+                        status: safeFinalStatus,
                         last_run_id: runId,
                         updated_at: finishedAt
                     });
@@ -472,7 +481,7 @@ async function startEngineRun(payload) {
                 broadcastEvent({ 
                     event: 'test-finished', 
                     runId, 
-                    status: finalBusinessStatus,
+                    status: safeFinalStatus,
                     testCaseId: payload.testCaseId,
                     reportCode: finalReportCode,
                     score: reportScore

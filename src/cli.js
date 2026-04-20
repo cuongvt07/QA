@@ -754,6 +754,7 @@ async function main() {
 
     } catch (error) {
         console.error(`\n❌ Fatal error: ${error.message}\n`);
+        process.exitCode = 1;
     } finally {
         if (browser) await browser.close();
         await ocrValidator.terminateOcrWorker();
