@@ -656,8 +656,10 @@ async function main() {
                 }
                 // ───────────────────────────────────────────────────────────────
 
+                const caseErrorSummary = errorListener.getSummary();
+
                 const caseReport = buildCaseReport({
-                    caseIndex: caseIdx, optionLabel, timeline: fullTimeline, errorSummary: errorListener.getSummary(),
+                    caseIndex: caseIdx, optionLabel, timeline: fullTimeline, errorSummary: caseErrorSummary,
                     cartResult, previewResult, startTime: caseStartTime, aiEnabled: aiEvaluator.enabled,
                     is_fatal: fatalReasons.length > 0, fatal_reasons: fatalReasons,
                     temporal_violations: temporalViolations, completion_result: completionResult,
@@ -688,7 +690,7 @@ async function main() {
                     try {
                         if (skipFinalAi) {
                             caseReport.final_evaluation.ai_review = {
-                                summary: 'Skipped AI final review due to exceptionally high local quality score (>= 95.0).',
+                                summary: 'Tier-1 deterministic pass: skipped AI final review due to high local quality score (>= 95.0).',
                                 strengths: ['Strong local pixel stability', 'OCR match confirmed', 'DOM context valid'],
                                 issues: [],
                                 layout_notes: [],
@@ -698,6 +700,10 @@ async function main() {
                                 ai_verdict: 'PASS',
                                 confidence: 1.0,
                                 ai_reason: `Auto-passed. Local Quality Score was ${reliabilityData.quality_score}.`,
+                                triage_tier: 1,
+                                triage_path: ['T1_DETERMINISTIC_PASS', 'HIGH_QUALITY_SHORTCUT'],
+                                flags: ['SKIP_FINAL_AI'],
+                                tokens_used: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 },
                                 reviewed_image: finalPreviewPathToUse
                             };
                             phaseDurations.phase_ai_review = 0;
@@ -705,7 +711,21 @@ async function main() {
                             if (!previewResult.valid) {
                                 console.log(`    [AI] Final review continuing despite preview validation failure: ${previewResult.error || previewResult.message || 'unknown reason'}`);
                             }
-                            const aiFinal = await aiEvaluator.evaluateFinalPreview(finalPreviewPathToUse, caseReport);
+                            const aiFinal = await aiEvaluator.evaluateFinalPreview(
+                                finalPreviewPathToUse,
+                                caseReport,
+                                {
+                                    triageContext: {
+                                        previewResult,
+                                        cartResult,
+                                        cartEvidence,
+                                        errorSummary: caseErrorSummary,
+                                        completionResult,
+                                        temporalViolations,
+                                        reliabilityData,
+                                    },
+                                }
+                            );
                             aiFinal.reviewed_image = finalPreviewPathToUse; 
                             caseReport.final_evaluation.ai_review = aiFinal;
                         }

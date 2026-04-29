@@ -30,6 +30,8 @@ const path = require('path');
 // ─── Model tiers ────────────────────────────────────────────────────────────
 const MODEL_FAST  = 'gpt-4o-mini';          // Đơn giản, budget thấp
 const MODEL_SMART = process.env.FINAL_REVIEW_MODEL || 'gpt-4o';  // Phức tạp, final
+const TIER2_ESCALATE_CONFIDENCE = parseFloat(process.env.TRIAGE_TIER2_ESCALATE_CONFIDENCE || '0.75');
+const TIER2_FAIL_CONFIDENCE = parseFloat(process.env.TRIAGE_TIER2_FAIL_CONFIDENCE || '0.85');
 
 // ─── Prompt templates (POD-tuned) ───────────────────────────────────────────
 
@@ -90,6 +92,31 @@ Return ONLY a valid JSON object. No markdown fences. No extra keys.
   "content_notes": ["<item>"],
   "ai_verdict": "PASS" | "FAIL",
   "confidence": <float 0.0–1.0>
+}`;
+
+const SYSTEM_FINAL_REVIEW_LIGHT = `You are a lightweight POD preview triage validator.
+You must answer with strict JSON only, no markdown.
+Judge only what is visible in provided cropped zones.
+If uncertain, set confidence low and add "NEED_DEEP_REVIEW" in flags.
+{
+  "pass": <boolean>,
+  "textVisible": <boolean>,
+  "textCorrect": <boolean>,
+  "colorMatch": <boolean>,
+  "confidence": <float 0.0-1.0>,
+  "issues": ["<short issue>"],
+  "flags": ["<flag>"]
+}`;
+
+const SYSTEM_FINAL_REVIEW_DEEP = `You are a senior POD QA reviewer.
+Return strict JSON only. No markdown and no extra explanation.
+Focus on missing/incorrect customizations, placement defects, unreadable text, and rendering artifacts.
+{
+  "summary": "<short summary>",
+  "pass": <boolean>,
+  "confidence": <float 0.0-1.0>,
+  "issues": ["<short issue>"],
+  "flags": ["<flag>"]
 }`;
 
 /**
@@ -245,6 +272,250 @@ class AiEvaluator {
             .resize({ width, withoutEnlargement: true })
             .jpeg({ quality })
             .toBuffer();
+    }
+
+    _clamp01(value, fallback = 0) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.max(0, Math.min(1, n));
+    }
+
+    _isPassStatus(status) {
+        return String(status || '').toUpperCase() === 'PASS';
+    }
+
+    _getUsageSnapshot() {
+        return { ...this.usage };
+    }
+
+    _getUsageDelta(before) {
+        return {
+            prompt_tokens: Math.max(0, (this.usage.prompt_tokens || 0) - (before?.prompt_tokens || 0)),
+            completion_tokens: Math.max(0, (this.usage.completion_tokens || 0) - (before?.completion_tokens || 0)),
+            total_tokens: Math.max(0, (this.usage.total_tokens || 0) - (before?.total_tokens || 0)),
+            calls: Math.max(0, (this.usage.calls || 0) - (before?.calls || 0)),
+        };
+    }
+
+    _collectFinalCustomizationSteps(caseReport = {}) {
+        const validTypes = new Set(['image_option', 'text_input', 'file_upload', 'dropdown', 'color_option']);
+        return (caseReport.timeline || []).filter((s) => validTypes.has(String(s.group_type || '')) && !s.context_transition);
+    }
+
+    _buildFinalTriageSignals(caseReport = {}, triageContext = {}) {
+        const steps = this._collectFinalCustomizationSteps(caseReport);
+        const errorSummary = triageContext.errorSummary || {};
+        const previewResult = triageContext.previewResult || {};
+        const cartResult = triageContext.cartResult || {};
+        const cartEvidence = triageContext.cartEvidence || {};
+
+        const jsErrors = Number(errorSummary.totalJsErrors ?? caseReport.final_evaluation?.js_errors ?? 0) || 0;
+        const networkErrors = Array.isArray(errorSummary.networkErrors) ? errorSummary.networkErrors : [];
+        const http5xx = networkErrors.filter((e) => Number(e?.status) >= 500).length;
+        const canvasBlank = previewResult.error === 'CANVAS_CRASH';
+        const previewInvalid = previewResult.valid === false;
+        const cartImageMissing = cartEvidence && cartEvidence.captured === false;
+        const cartFailed = cartResult && cartResult.success === false;
+        const hasFatalTemporal = Array.isArray(triageContext.temporalViolations)
+            && triageContext.temporalViolations.some((v) => String(v?.severity || '').toUpperCase() === 'FATAL');
+
+        const ssimValues = steps
+            .map((s) => Number(s.ssim_score))
+            .filter((v) => Number.isFinite(v));
+        const minSsim = ssimValues.length ? Math.min(...ssimValues) : null;
+
+        const ocrSteps = steps.filter((s) => s.group_type === 'text_input' && s.ocr_evaluation);
+        const ocrMatch = ocrSteps.length > 0 ? ocrSteps.every((s) => Boolean(s.ocr_evaluation?.found)) : null;
+
+        const colorSteps = steps.filter((s) => {
+            const result = String(s.color_evaluation?.result || '').toUpperCase();
+            return result && !['SKIPPED', 'UNAVAILABLE', 'ERROR'].includes(result);
+        });
+        const colorMatch = colorSteps.length > 0
+            ? colorSteps.every((s) => String(s.color_evaluation?.result || '').toUpperCase() === 'PASS')
+            : null;
+
+        const completionRatio = Number(
+            triageContext.completionResult?.completionRatio
+            ?? caseReport.completion_result?.completionRatio
+        );
+        const reliabilityScore = Number(
+            triageContext.reliabilityData?.quality_score
+            ?? caseReport.quality_score
+        );
+        const allStepsPass = steps.length > 0 && steps.every((s) => this._isPassStatus(s.status) || this._isPassStatus(s.validation_status));
+        const decorativeFontRisk = steps.some((s) => s.group_type === 'text_input' && s.ocr_evaluation && !s.ocr_evaluation.found);
+
+        return {
+            stepsCount: steps.length,
+            jsErrors,
+            http5xx,
+            canvasBlank,
+            previewInvalid,
+            cartImageMissing,
+            cartFailed,
+            hasFatalTemporal,
+            minSsim,
+            ocrMatch,
+            colorMatch,
+            completionRatio: Number.isFinite(completionRatio) ? completionRatio : null,
+            reliabilityScore: Number.isFinite(reliabilityScore) ? reliabilityScore : null,
+            allStepsPass,
+            decorativeFontRisk,
+        };
+    }
+
+    _runDeterministicTier(signals = {}) {
+        const failReasons = [];
+        if (signals.canvasBlank) failReasons.push('CANVAS_CRASH');
+        if (signals.previewInvalid) failReasons.push('PREVIEW_INVALID');
+        if ((signals.http5xx || 0) > 0) failReasons.push('HTTP_5XX');
+        if ((signals.jsErrors || 0) > 0) failReasons.push('JS_ERROR');
+        if (signals.cartImageMissing) failReasons.push('CART_EVIDENCE_MISSING');
+        if (signals.cartFailed) failReasons.push('ADD_TO_CART_FAIL');
+        if (signals.hasFatalTemporal) failReasons.push('TEMPORAL_FATAL');
+        if (Number.isFinite(signals.minSsim) && signals.minSsim < 0.5) failReasons.push('SSIM_BELOW_0_5');
+
+        if (failReasons.length > 0) {
+            return {
+                resolved: true,
+                verdict: 'FAIL',
+                confidence: 1,
+                summary: `Deterministic gate failed: ${failReasons.join(', ')}`,
+                issues: failReasons.map((code) => `Deterministic failure: ${code}`),
+                flags: failReasons,
+                triage_path: ['T1_DETERMINISTIC_FAIL'],
+            };
+        }
+
+        const strictSsimPass = Number.isFinite(signals.minSsim) && signals.minSsim > 0.995;
+        const textColorPass = signals.ocrMatch === true && (signals.colorMatch === true || signals.colorMatch === null);
+        const highQualityPass = Number.isFinite(signals.reliabilityScore) && signals.reliabilityScore >= 95;
+        const completionPass = signals.completionRatio === null || signals.completionRatio >= 0.95;
+        const noInfraRisk = (signals.jsErrors || 0) === 0 && (signals.http5xx || 0) === 0 && !signals.previewInvalid;
+
+        if (signals.allStepsPass && completionPass && noInfraRisk && (strictSsimPass || textColorPass || highQualityPass)) {
+            return {
+                resolved: true,
+                verdict: 'PASS',
+                confidence: 1,
+                summary: 'Deterministic checks confirm the preview is valid without AI escalation.',
+                issues: [],
+                flags: ['T1_AUTO_PASS'],
+                triage_path: ['T1_DETERMINISTIC_PASS'],
+            };
+        }
+
+        return {
+            resolved: false,
+            verdict: 'REVIEW',
+            confidence: 0,
+            summary: 'Deterministic checks are inconclusive.',
+            issues: [],
+            flags: ['T1_INCONCLUSIVE'],
+            triage_path: ['T1_INCONCLUSIVE'],
+        };
+    }
+
+    _collectReviewZones(caseReport = {}, maxZones = 4) {
+        const steps = this._collectFinalCustomizationSteps(caseReport);
+        const zones = [];
+
+        for (const step of steps) {
+            const mask = step.diffMask || step.bbox;
+            if (!mask) continue;
+            const x = Math.max(0, Math.floor(Number(mask.x) || 0));
+            const y = Math.max(0, Math.floor(Number(mask.y) || 0));
+            const w = Math.max(0, Math.floor(Number(mask.w) || 0));
+            const h = Math.max(0, Math.floor(Number(mask.h) || 0));
+            if (w < 6 || h < 6) continue;
+
+            zones.push({
+                name: String(step.name || step.action || 'Customization'),
+                type: String(step.group_type || 'unknown'),
+                expected: String(step.value_chosen || ''),
+                bbox: { x, y, w, h },
+            });
+        }
+
+        return zones.slice(-maxZones);
+    }
+
+    async _buildZoneImages(previewPath, zones, options = {}) {
+        const sharp = require('sharp');
+        const {
+            maxWidth = 512,
+            quality = 75,
+            detail = 'low',
+        } = options;
+
+        if (!Array.isArray(zones) || zones.length === 0) return [];
+        const meta = await sharp(previewPath).metadata();
+        const maxW = Number(meta?.width) || 0;
+        const maxH = Number(meta?.height) || 0;
+        if (maxW <= 0 || maxH <= 0) return [];
+
+        const results = [];
+        for (const zone of zones) {
+            const x = Math.max(0, Math.min(maxW - 1, Number(zone?.bbox?.x) || 0));
+            const y = Math.max(0, Math.min(maxH - 1, Number(zone?.bbox?.y) || 0));
+            const w = Math.max(1, Math.min(maxW - x, Number(zone?.bbox?.w) || 1));
+            const h = Math.max(1, Math.min(maxH - y, Number(zone?.bbox?.h) || 1));
+            if (w < 2 || h < 2) continue;
+
+            const crop = await sharp(previewPath)
+                .extract({ left: x, top: y, width: w, height: h })
+                .resize({ width: maxWidth, withoutEnlargement: true })
+                .jpeg({ quality })
+                .toBuffer();
+
+            results.push({
+                zone,
+                detail,
+                base64: crop.toString('base64'),
+            });
+        }
+        return results;
+    }
+
+    _buildActionLines(caseReport = {}) {
+        return (caseReport.timeline || [])
+            .filter((s) => !s.is_menu_opener && s.group_type !== 'lifecycle' && s.value_chosen)
+            .map((s) => {
+                if (s.group_type === 'image_option') return `- [Graphic] "${s.name}" => "${s.value_chosen}"`;
+                if (s.group_type === 'text_input') return `- [Text] "${s.name}" => "${s.value_chosen}"`;
+                if (s.group_type === 'color_option') return `- [Color] "${s.name}" => "${s.value_chosen}"`;
+                return `- [${s.group_type || s.action}] "${s.name}" => "${s.value_chosen}"`;
+            })
+            .join('\n');
+    }
+
+    _toFinalReviewPayload({
+        verdict = 'ERROR',
+        summary = '',
+        issues = [],
+        confidence = 0,
+        tier = null,
+        triagePath = [],
+        flags = [],
+        tokensUsed = null,
+    } = {}) {
+        return {
+            summary: summary || '',
+            strengths: verdict === 'PASS' ? ['Customization validation passed.'] : [],
+            issues: Array.isArray(issues) ? issues : [],
+            layout_notes: [],
+            color_notes: [],
+            content_notes: [],
+            recommendations: [],
+            ai_verdict: verdict,
+            confidence: this._clamp01(confidence, 0),
+            ai_reason: summary || (Array.isArray(issues) ? issues[0] : '') || 'No summary',
+            triage_tier: tier,
+            triage_path: triagePath,
+            flags: Array.isArray(flags) ? flags : [],
+            tokens_used: tokensUsed || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 },
+        };
     }
 
     // ── evaluateStep ────────────────────────────────────────────────────────
@@ -637,89 +908,231 @@ Compare BEFORE vs AFTER. Did the interaction produce the expected UI change?`;
 
     // ── evaluateFinalPreview ────────────────────────────────────────────────
 
-    async evaluateFinalPreview(imagePath, caseReport = {}) {
+    async evaluateFinalPreview(imagePath, caseReport = {}, options = {}) {
         if (!this.generalAiEnabled || !this.client) {
-            return { ai_verdict: 'DISABLED', ai_reason: 'AI evaluation disabled' };
+            return this._toFinalReviewPayload({
+                verdict: 'DISABLED',
+                summary: 'AI evaluation disabled.',
+                tier: 0,
+                triagePath: ['AI_DISABLED'],
+            });
         }
         if (!fs.existsSync(imagePath)) {
-            return { ai_verdict: 'ERROR', ai_reason: 'Final screenshot file not found.' };
+            return this._toFinalReviewPayload({
+                verdict: 'ERROR',
+                summary: 'Final screenshot file not found.',
+                tier: 0,
+                triagePath: ['MISSING_FINAL_IMAGE'],
+                flags: ['FINAL_IMAGE_MISSING'],
+            });
         }
 
         try {
-            // Build human-readable action list
-            const actionLines = (caseReport.timeline || [])
-                .filter(s => !s.is_menu_opener && s.group_type !== 'lifecycle' && s.value_chosen)
-                .map(s => {
-                    if (s.group_type === 'image_option') return `• [Graphic]  "${s.name}" → variant "${s.value_chosen}"`;
-                    if (s.group_type === 'text_input')   return `• [Text]     "${s.name}" → "${s.value_chosen}"`;
-                    if (s.group_type === 'color_option')  return `• [Color]    "${s.name}" → "${s.value_chosen}"`;
-                    return `• [${s.group_type || s.action}] "${s.name}" → "${s.value_chosen}"`;
-                })
-                .join('\n');
+            const triageContext = options?.triageContext || {};
+            const actionLines = this._buildActionLines(caseReport);
+            const signals = this._buildFinalTriageSignals(caseReport, triageContext);
+            const deterministic = this._runDeterministicTier(signals);
 
-            console.log('  [AI DEBUG] Final review context:\n' + actionLines);
-
-            // [P5] Prep image — keep reasonable resolution for final review
-            const sharp = require('sharp');
-            let imageBuffer = fs.readFileSync(imagePath);
-            try {
-                imageBuffer = await sharp(imageBuffer)
-                    .resize({ width: 512, withoutEnlargement: true })
-                    .removeAlpha()
-                    .withMetadata(false)
-                    .jpeg({ quality: 80 })
-                    .toBuffer();
-            } catch (e) {
-                console.warn('  [AI] Sharp optimization failed:', e.message);
+            if (deterministic.resolved) {
+                return this._toFinalReviewPayload({
+                    verdict: deterministic.verdict,
+                    summary: deterministic.summary,
+                    issues: deterministic.issues,
+                    confidence: deterministic.confidence,
+                    tier: 1,
+                    triagePath: deterministic.triage_path,
+                    flags: deterministic.flags,
+                    tokensUsed: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, calls: 0 },
+                });
             }
 
-            const userText = `The customer requested the following customizations:
-${actionLines || '(No customizations recorded)'}
+            const zones = this._collectReviewZones(caseReport, 4);
+            const sharp = require('sharp');
+            const tier2UsageBefore = this._getUsageSnapshot();
+            let tier2Pass = false;
+            let tier2Confidence = 0;
+            let tier2Issues = [];
+            let tier2Flags = [];
+            let tier2EscalateReason = 'LOW_CONFIDENCE';
 
-Review the FINAL PRODUCT PREVIEW image and evaluate if all customizations are present and correctly rendered.
-Be a quality-conscious customer — accept reasonable artistic variation, reject clear errors or missing content.`;
+            try {
+                let zoneImages = await this._buildZoneImages(imagePath, zones, { maxWidth: 512, quality: 75, detail: 'low' });
+                if (zoneImages.length === 0) {
+                    const fallback = await sharp(imagePath)
+                        .resize({ width: 512, withoutEnlargement: true })
+                        .jpeg({ quality: 75 })
+                        .toBuffer();
+                    zoneImages = [{
+                        zone: { name: 'full_preview_fallback', type: 'full_preview', expected: '' },
+                        detail: 'low',
+                        base64: fallback.toString('base64'),
+                    }];
+                    tier2Flags.push('NO_ZONE_FALLBACK_TO_PREVIEW');
+                }
 
-            const makeCall = async () => this.client.chat.completions.create({
-                model:           MODEL_SMART,   // Final review → model tốt nhất
+                const zoneSummary = zoneImages.map((z, idx) => {
+                    const expected = z.zone.expected ? ` expected="${z.zone.expected}"` : '';
+                    return `${idx + 1}. ${z.zone.name} (${z.zone.type})${expected}`;
+                }).join('\n');
+
+                const lightPrompt = `You are validating POD customization zones.
+Expected customizations:
+${actionLines || '- (No customizations recorded)'}
+
+Provided zones:
+${zoneSummary}
+
+Return JSON only with pass/textVisible/textCorrect/colorMatch/confidence/issues/flags.`;
+
+                const content = [{ type: 'text', text: lightPrompt }];
+                zoneImages.forEach((item, idx) => {
+                    content.push({ type: 'text', text: `ZONE ${idx + 1}: ${item.zone.name} (${item.zone.type})` });
+                    content.push({
+                        type: 'image_url',
+                        image_url: { url: `data:image/jpeg;base64,${item.base64}`, detail: item.detail || 'low' },
+                    });
+                });
+
+                const response = await this.client.chat.completions.create({
+                    model: MODEL_FAST,
+                    response_format: { type: 'json_object' },
+                    temperature: 0,
+                    max_tokens: 180,
+                    messages: [
+                        { role: 'system', content: SYSTEM_FINAL_REVIEW_LIGHT },
+                        { role: 'user', content },
+                    ],
+                });
+
+                this._trackUsage(response.usage);
+                const parsed = this.safeParseFinalReview(response.choices?.[0]?.message?.content || '') || {};
+                tier2Pass = Boolean(parsed.pass ?? (String(parsed.ai_verdict || '').toUpperCase() === 'PASS'));
+                tier2Confidence = this._clamp01(parsed.confidence, 0);
+                tier2Issues = Array.isArray(parsed.issues) ? parsed.issues.map((v) => String(v)) : [];
+                tier2Flags = tier2Flags.concat(Array.isArray(parsed.flags) ? parsed.flags.map((v) => String(v).toUpperCase()) : []);
+
+                if (tier2Confidence < TIER2_ESCALATE_CONFIDENCE) {
+                    tier2EscalateReason = `TIER2_CONFIDENCE_LT_${TIER2_ESCALATE_CONFIDENCE}`;
+                } else if (tier2Flags.includes('NEED_DEEP_REVIEW')) {
+                    tier2EscalateReason = 'FLAG_NEED_DEEP_REVIEW';
+                }
+            } catch (tier2Err) {
+                tier2Flags.push('TIER2_ERROR');
+                tier2Issues.push(`Tier-2 review error: ${tier2Err.message}`);
+                tier2EscalateReason = 'TIER2_ERROR';
+            }
+
+            const tier2Tokens = this._getUsageDelta(tier2UsageBefore);
+            const mustEscalate =
+                tier2Flags.includes('TIER2_ERROR')
+                || tier2Flags.includes('NEED_DEEP_REVIEW')
+                || tier2Confidence < TIER2_ESCALATE_CONFIDENCE
+                || signals.decorativeFontRisk
+                || zones.length > 1;
+
+            if (!mustEscalate) {
+                const tier2Verdict = tier2Pass
+                    ? 'PASS'
+                    : (tier2Confidence >= TIER2_FAIL_CONFIDENCE ? 'FAIL' : 'REVIEW');
+                const summary = tier2Verdict === 'PASS'
+                    ? 'Tier-2 lightweight review confirms expected customization.'
+                    : (tier2Issues[0] || 'Tier-2 lightweight review found issues.');
+
+                return this._toFinalReviewPayload({
+                    verdict: tier2Verdict,
+                    summary,
+                    issues: tier2Issues,
+                    confidence: tier2Confidence,
+                    tier: 2,
+                    triagePath: ['T1_INCONCLUSIVE', 'T2_LIGHTWEIGHT_RESOLVED'],
+                    flags: tier2Flags,
+                    tokensUsed: tier2Tokens,
+                });
+            }
+
+            const tier3UsageBefore = this._getUsageSnapshot();
+            const deepZones = await this._buildZoneImages(imagePath, zones, { maxWidth: 768, quality: 82, detail: 'high' });
+            const deepPrompt = `Review POD preview zones and provide a concise final QA decision.
+Escalation reason: ${tier2EscalateReason}
+Expected customizations:
+${actionLines || '- (No customizations recorded)'}
+
+For each zone, validate:
+1) content matches expected
+2) placement looks correct
+3) no visual artifacts`;
+
+            const deepContent = [{ type: 'text', text: deepPrompt }];
+            if (deepZones.length > 0) {
+                deepZones.forEach((item, idx) => {
+                    deepContent.push({ type: 'text', text: `DEEP ZONE ${idx + 1}: ${item.zone.name} (${item.zone.type}) expected="${item.zone.expected}"` });
+                    deepContent.push({
+                        type: 'image_url',
+                        image_url: { url: `data:image/jpeg;base64,${item.base64}`, detail: 'high' },
+                    });
+                });
+            } else {
+                const fallbackBuffer = await sharp(imagePath)
+                    .resize({ width: 768, withoutEnlargement: true })
+                    .jpeg({ quality: 82 })
+                    .toBuffer();
+                deepContent.push({ type: 'text', text: 'DEEP FALLBACK IMAGE: full preview (zones unavailable).' });
+                deepContent.push({
+                    type: 'image_url',
+                    image_url: { url: `data:image/jpeg;base64,${fallbackBuffer.toString('base64')}`, detail: 'high' },
+                });
+            }
+
+            const deepRes = await this.client.chat.completions.create({
+                model: MODEL_SMART,
                 response_format: { type: 'json_object' },
-                temperature:     0.1,
-                max_tokens:      300,
+                temperature: 0.1,
+                max_tokens: 220,
                 messages: [
-                    { role: 'system', content: SYSTEM_FINAL_REVIEW },
-                    {
-                        role: 'user',
-                        content: [
-                            { type: 'text',      text: userText },
-                            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBuffer.toString('base64')}`, detail: 'low' } },
-                        ],
-                    },
+                    { role: 'system', content: SYSTEM_FINAL_REVIEW_DEEP },
+                    { role: 'user', content: deepContent },
                 ],
             });
 
-            let response;
-            for (let attempt = 1; attempt <= 2; attempt++) {
-                try {
-                    response = await makeCall();
-                    this._trackUsage(response.usage);
-                    const parsed = this.safeParseFinalReview(response.choices[0].message.content);
-                    if (parsed) return this.normalizeFinalReview(parsed);
-                } catch (err) {
-                    console.warn(`  [AI] Final review attempt ${attempt} failed: ${err.message}`);
-                    if (attempt === 2) throw err;
-                    await new Promise(r => setTimeout(r, 2000));
-                }
-            }
+            this._trackUsage(deepRes.usage);
+            const tier3Tokens = this._getUsageDelta(tier3UsageBefore);
+            const deepParsed = this.safeParseFinalReview(deepRes.choices?.[0]?.message?.content || '') || {};
+            const deepPass = Boolean(deepParsed.pass ?? (String(deepParsed.ai_verdict || '').toUpperCase() === 'PASS'));
+            const deepConfidence = this._clamp01(deepParsed.confidence, 0);
+            const deepIssues = Array.isArray(deepParsed.issues)
+                ? deepParsed.issues.map((v) => String(v))
+                : (tier2Issues.length ? tier2Issues : []);
+            const deepFlags = []
+                .concat(Array.isArray(deepParsed.flags) ? deepParsed.flags.map((v) => String(v).toUpperCase()) : [])
+                .concat(tier2Flags);
+            const deepSummary = String(deepParsed.summary || '').trim()
+                || deepIssues[0]
+                || (deepPass ? 'Tier-3 deep review passed.' : 'Tier-3 deep review found issues.');
 
-            return {
-                summary: 'AI Final Review failed after all attempts.',
-                strengths: [], issues: [], layout_notes: [], color_notes: [], content_notes: [],
-                ai_verdict: 'ERROR', confidence: 0,
-                ai_reason: 'AI Final Review failed after all attempts.',
-            };
-
+            return this._toFinalReviewPayload({
+                verdict: deepPass ? 'PASS' : 'FAIL',
+                summary: deepSummary,
+                issues: deepIssues,
+                confidence: deepConfidence || Math.max(deepConfidence, tier2Confidence),
+                tier: 3,
+                triagePath: ['T1_INCONCLUSIVE', 'T2_ESCALATED', 'T3_DEEP_REVIEW'],
+                flags: deepFlags,
+                tokensUsed: {
+                    prompt_tokens: (tier2Tokens.prompt_tokens || 0) + (tier3Tokens.prompt_tokens || 0),
+                    completion_tokens: (tier2Tokens.completion_tokens || 0) + (tier3Tokens.completion_tokens || 0),
+                    total_tokens: (tier2Tokens.total_tokens || 0) + (tier3Tokens.total_tokens || 0),
+                    calls: (tier2Tokens.calls || 0) + (tier3Tokens.calls || 0),
+                },
+            });
         } catch (err) {
             console.error('[ERR] AI Final Review error:', err.message);
-            return { ai_verdict: 'ERROR', ai_reason: `API call failed: ${err.message}` };
+            return this._toFinalReviewPayload({
+                verdict: 'ERROR',
+                summary: `API call failed: ${err.message}`,
+                tier: 3,
+                triagePath: ['T1_INCONCLUSIVE', 'T2_OR_T3_ERROR'],
+                flags: ['FINAL_REVIEW_ERROR'],
+            });
         }
     }
 
