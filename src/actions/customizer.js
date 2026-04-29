@@ -674,11 +674,11 @@ async function capturePreviewScreenshot(page, filepath) {
                     if (allTransparent) return 'BLANK_DETECTED';
                 }
 
-                return canvas.toDataURL('image/webp', 0.8);
+                return canvas.toDataURL('image/png');
             });
 
             if (canvasData && canvasData !== 'BLANK_DETECTED') {
-                const base64Data = canvasData.replace(/^data:image\/webp;base64,/, '');
+                const base64Data = canvasData.replace(/^data:image\/(png|webp|jpeg|jpg);base64,/, '');
                 fs.writeFileSync(filepath, base64Data, 'base64');
                 captureState.domOnlyUntil = 0;
                 captureState.canvasUnavailableMode = false;
@@ -714,7 +714,7 @@ async function capturePreviewScreenshot(page, filepath) {
                 if (isVisible) {
                     const box = await el.boundingBox();
                     if (box && box.width > 50 && box.height > 50) {
-                        await el.screenshot({ path: filepath, type: 'webp', quality: 80 });
+                        await el.screenshot({ path: filepath, type: 'png' });
                         captureState.lastPreviewSelector = selector;
                         return filepath;
                     }
@@ -724,7 +724,7 @@ async function capturePreviewScreenshot(page, filepath) {
     }
     
     // Final desperate fallback
-    await page.screenshot({ path: filepath, fullPage: false, type: 'webp', quality: 80 });
+    await page.screenshot({ path: filepath, fullPage: false, type: 'png' });
     return filepath;
 }
 
@@ -854,7 +854,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
             };
 
             try {
-                let beforePath = path.join(screenshotDir, `step_${stepIndex}_before.webp`);
+                let beforePath = path.join(screenshotDir, `step_${stepIndex}_before.png`);
                 
                 // Wait for the specific group type to ensure the page is ready
                 const waitTime = group.type === 'image_option' ? 150 : 110;
@@ -1105,7 +1105,7 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                     await waitForGroupCountStable(page);
                 }
 
-                const afterPath = path.join(screenshotDir, `step_${stepIndex}_after.webp`);
+                const afterPath = path.join(screenshotDir, `step_${stepIndex}_after.png`);
                 if (stepData.capture_preview_state) {
                     const tSnap = Date.now();
                     await capturePreviewScreenshot(page, afterPath);
@@ -1141,6 +1141,11 @@ async function performCustomization(page, screenshotDir, fixedOptionIndex, custo
                 stepData.interaction_status = 'FAIL';
                 stepData.validation_status = 'FAIL';
                 stepData.message = `ERROR: ${error.message}`;
+                stepData.code_evaluation = {
+                    status: 'FAIL',
+                    diff_score: -1,
+                    message: `Interaction failed before visual validation: ${error.message}`,
+                };
             }
             timeline.push(stepData);
             break;

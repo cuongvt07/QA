@@ -119,7 +119,7 @@ async function capturePreviewFast(page, outputPath = null) {
             for (const sel of selectors) {
                 const c = document.querySelector(sel);
                 if (c && c.width > 100 && c.height > 100) {
-                    return c.toDataURL('image/webp', 0.8);
+                    return c.toDataURL('image/png');
                 }
             }
             return null;
@@ -149,7 +149,7 @@ async function capturePreviewFast(page, outputPath = null) {
         await page.waitForTimeout(1000);
     }
     
-    const buffer = await page.screenshot({ type: 'webp', quality: 80 });
+    const buffer = await page.screenshot({ type: 'png' });
     if (outputPath) fs.writeFileSync(outputPath, buffer);
     return buffer;
 }
@@ -423,7 +423,8 @@ async function main() {
                         (step.ai_needs_manual_review) // Explicitly flagged
                     );
 
-                    if (aiEvaluator.enabled && isAmbiguous && step.expects_visual_change) {
+                    const hasUsableAfterState = Boolean(step.state_after && fs.existsSync(step.state_after));
+                    if (aiEvaluator.enabled && isAmbiguous && step.expects_visual_change && hasUsableAfterState) {
                         try {
                             // Step 4.1: LOCATE (with character zone context)
                             const stepContext = {
@@ -470,7 +471,11 @@ async function main() {
                             // Step 4.4: ANNOTATE (Step-level)
                             if (bbox && bbox.w > 0 && bbox.h > 0 && bbox.source === 'opencv' && fs.existsSync(step.state_after)) {
                                 const meta = await sharp(step.state_after).metadata();
-                                const annotatedPath = step.state_after.replace('.webp', '_step_annotated.webp');
+                                const parsedAfter = path.parse(step.state_after);
+                                const annotatedPath = path.join(
+                                    parsedAfter.dir,
+                                    `${parsedAfter.name}_step_annotated.webp`
+                                );
                                 const annotations = [{
                                     bbox: [
                                         Math.round((bbox.x / meta.width) * 1000),
@@ -496,6 +501,13 @@ async function main() {
                             step.ai_needs_manual_review = true;
                             console.warn(`    [AI] API Error — keeping code verdict (${step.status}), flagging for review`);
                         }
+                    } else if (aiEvaluator.enabled && isAmbiguous && step.expects_visual_change && !hasUsableAfterState) {
+                        step.ai_evaluation = {
+                            ai_verdict: 'SKIPPED',
+                            ai_reason: 'Skipped AI judge: missing AFTER screenshot artifact.',
+                            confidence: 0,
+                        };
+                        step.ai_needs_manual_review = true;
                     }
 
                     if (step.interaction_status !== 'FAIL') {
@@ -526,7 +538,7 @@ async function main() {
                     })(),
                     (async () => {
                         const tCaptureFast = Date.now();
-                        const finalPreviewPath = path.join(caseDir, 'final_preview.webp');
+                        const finalPreviewPath = path.join(caseDir, 'final_preview.png');
                         finalPreviewBuffer = await capturePreviewFast(page, finalPreviewPath);
                         console.log(`[PERF] capturePreviewFast: ${Date.now() - tCaptureFast}ms`);
                         
@@ -671,7 +683,7 @@ async function main() {
                 // Final AI Review
                 let finalPreviewPathToUse = lastStepWithAfter ? lastStepWithAfter.state_after : null;
                 if (finalPreviewBuffer) {
-                    finalPreviewPathToUse = path.join(caseDir, 'final_preview.webp');
+                    finalPreviewPathToUse = path.join(caseDir, 'final_preview.png');
                 }
 
                 const hasReviewablePreview =

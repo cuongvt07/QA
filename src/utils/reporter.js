@@ -383,6 +383,10 @@ function buildCaseReport({
         result.quality_score = reliability.quality_score;
         result.confidence_score = reliability.confidence_score;
         result.score = reliability.quality_score; // Engine V2 score is the truth
+        if (result.score_breakdown && typeof result.score_breakdown === 'object') {
+            // Keep UI summary in sync with Reliability V2 final score.
+            result.score_breakdown.total = result.score;
+        }
         
         result.reliability_v2 = {
             quality_score: reliability.quality_score,
